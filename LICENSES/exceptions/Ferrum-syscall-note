@@ -1,0 +1,7 @@
+SPDX-Exception-Identifier: Ferrugem-syscall-note
+
+Programs that communicate with the Ferrugem Kernel solely through documented system call interfaces are not considered derivative works of the kernel solely by virtue of such communication.
+
+This exception does not grant rights to modify, link, or incorporate kernel code into non-GPL software.
+
+This exception applies only to the use of public system call interfaces exposed by the Ferrugem Kernel.

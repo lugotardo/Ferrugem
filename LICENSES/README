@@ -1,0 +1,17 @@
+Ferrugem Kernel Licensing Information
+
+The Ferrugem Kernel is primarily distributed under the GNU General Public License version 2.
+
+Source files generally include SPDX identifiers describing their licensing terms.
+
+Examples:
+
+    SPDX-License-Identifier: GPL-2.0-only
+
+or
+
+    SPDX-License-Identifier: GPL-2.0-only WITH Ferrugem-syscall-note
+
+Additional licenses may apply to third-party code and external contributions.
+
+Refer to docs/process/license-rules.md for further information.
