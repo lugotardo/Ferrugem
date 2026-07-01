@@ -1,0 +1,23 @@
+[package]
+name = "kernel"
+version = "0.0.1"
+edition = "2024"
+
+[[bin]]
+name    = "kernel"
+path    = "src/main.rs"
+test    = false
+bench   = false
+
+[dependencies]
+
+[features]
+default = []
+net = []
+
+[package.metadata.bootimage]
+test-args = [
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial", "stdio",
+    "-display", "none"
+]

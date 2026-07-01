@@ -1,0 +1,13 @@
+Ferrugem Kernel
+
+Copyright (C) 2026 Ferrugem Contributors
+
+This project is licensed under the GNU General Public License version 2 only.
+
+See LICENSES/preferred/GPL-2.0 for the full license text.
+
+Additional exceptions may apply as described in:
+
+    LICENSES/exceptions/Ferrugem-syscall-note
+
+Contributions to the Ferrugem Kernel are accepted under the same license terms unless explicitly stated otherwise.
