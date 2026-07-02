@@ -7,7 +7,7 @@
 /// Slot 0 is the idle task and uses the boot stack (no guard page).
 /// Slots 1-63 allocate their stacks dynamically from the frame allocator.
 
-use crate::process::{Task, TaskState, FdEntry, SIGKILL, SIGTERM, SIGINT, SIGCHLD};
+use crate::process::{Task, TaskState, FdEntry, SIGKILL, SIGTERM, SIGINT, SIGABRT, SIGQUIT, SIGCHLD};
 
 const MAX_TASKS:   usize = 64;
 const STACK_PAGES: usize = 8;
@@ -93,8 +93,10 @@ fn deliver_all_signals() {
             if t.state == TaskState::Zombie { continue; }
             if t.pending_signals == 0 { continue; }
 
-            // Lethal signals: SIGKILL, SIGTERM, SIGINT
+            // Lethal signals: SIGKILL, SIGABRT, SIGQUIT, SIGTERM, SIGINT
             let lethal = t.take_signal(SIGKILL)
+                      || t.take_signal(SIGABRT)
+                      || t.take_signal(SIGQUIT)
                       || t.take_signal(SIGTERM)
                       || t.take_signal(SIGINT);
             if lethal {
@@ -188,10 +190,104 @@ pub fn spawn_user(prog: &[u8]) -> Option<usize> {
     }
 }
 
+/// Build a System V AMD64 ABI-compliant initial stack frame on `stack_page_phys`.
+///
+/// Memory layout (high to low within the 4 KiB page):
+///   [top-24]: 16-byte AT_RANDOM seed + 8-byte padding
+///   [top-32]: NUL-terminated argv[0] string, 8-byte padded
+///   [rsp..]:  argc, argv[0] ptr, NULL, NULL (envp), auxv pairs, AT_NULL
+///
+/// `stack_top_va` is the first byte ABOVE the stack page (= USER_ELF_STACK_TOP).
+/// Returns the virtual address of argc (the new user RSP).
+unsafe fn setup_abi_stack(
+    stack_page_phys: usize,
+    stack_top_va: usize,
+    argv0: &str,
+    phdr_va: usize,
+    phnum: usize,
+    phentsize: usize,
+) -> usize {
+    let page_va   = stack_top_va - 4096;
+    let phys_base = stack_page_phys;
+
+    // Helper: write u64 into the physical page at a given byte offset from page start.
+    let w64 = |off: usize, val: u64| { *((phys_base + off) as *mut u64) = val; };
+
+    // ── String area: write from page top downward ────────────────────────────
+
+    // 16-byte AT_RANDOM seed at the very top of the page.
+    let rand_off = 4096 - 16;
+    let rand_va  = page_va + rand_off;
+    // Fill with pseudo-random data from hardware entropy.
+    let seed = crate::arch::entropy_seed();
+    w64(rand_off,     seed);
+    w64(rand_off + 8, seed ^ 0xDEAD_BEEF_CAFE_1234);
+
+    // argv[0] string, 8-byte aligned, below AT_RANDOM.
+    let name     = argv0.as_bytes();
+    let str_off  = (rand_off - name.len() - 1) & !7;
+    let str_va   = page_va + str_off;
+    let dst = (phys_base + str_off) as *mut u8;
+    core::ptr::copy_nonoverlapping(name.as_ptr(), dst, name.len());
+    *dst.add(name.len()) = 0; // NUL
+
+    // ── ABI table: argc / argv[] / NULL / envp[] / NULL / auxv[] ────────────
+    // auxv entries we provide (type, value pairs, 8 bytes each):
+    //   AT_PHDR   (3), phdr_va       — program headers VA (required for TLS init)
+    //   AT_PHENT  (4), phentsize     — size of each program header entry
+    //   AT_PHNUM  (5), phnum         — number of program header entries
+    //   AT_PAGESZ (6), 4096
+    //   AT_UID    (11), 0
+    //   AT_EUID   (12), 0
+    //   AT_GID    (13), 0
+    //   AT_EGID   (14), 0
+    //   AT_SECURE (23), 0
+    //   AT_RANDOM (25), &rand_bytes
+    //   AT_NULL   (0),  0
+    // = 11 pairs × 16 bytes = 176 bytes
+    // + argc(8) + argv[0](8) + NULL(8) + NULL(8) = 32 bytes
+    // Total = 208 bytes from rsp (round up to 224 for alignment).
+    let table_size = 224usize;
+    let rsp_off = (str_off - table_size) & !15; // 16-byte align
+    let rsp_va  = page_va + rsp_off;
+
+    let mut o = rsp_off;
+    w64(o,      1);                 o += 8; // argc = 1
+    w64(o, str_va as u64);         o += 8; // argv[0] ptr
+    w64(o,      0);                 o += 8; // argv[1] = NULL
+    w64(o,      0);                 o += 8; // envp[0] = NULL
+    // auxv
+    w64(o,      3);                 o += 8; // AT_PHDR
+    w64(o, phdr_va as u64);         o += 8;
+    w64(o,      4);                 o += 8; // AT_PHENT
+    w64(o, phentsize as u64);       o += 8;
+    w64(o,      5);                 o += 8; // AT_PHNUM
+    w64(o, phnum as u64);           o += 8;
+    w64(o,      6);                 o += 8; // AT_PAGESZ
+    w64(o,   4096);                 o += 8;
+    w64(o,     11);                 o += 8; // AT_UID
+    w64(o,      0);                 o += 8;
+    w64(o,     12);                 o += 8; // AT_EUID
+    w64(o,      0);                 o += 8;
+    w64(o,     13);                 o += 8; // AT_GID
+    w64(o,      0);                 o += 8;
+    w64(o,     14);                 o += 8; // AT_EGID
+    w64(o,      0);                 o += 8;
+    w64(o,     23);                 o += 8; // AT_SECURE
+    w64(o,      0);                 o += 8;
+    w64(o,     25);                 o += 8; // AT_RANDOM
+    w64(o, rand_va as u64);         o += 8;
+    w64(o,      0);                 o += 8; // AT_NULL
+    w64(o,      0);                 // = 0
+    let _ = o;
+
+    rsp_va
+}
+
 /// Spawn a user task by loading an ELF64 binary into a fresh address space.
 /// Supports ET_EXEC and ET_DYN (PIE); ET_DYN ELFs are relocated to USER_BASE_VA.
 /// Returns the task slot index, or None on OOM / invalid ELF / run queue full.
-pub fn spawn_elf(data: &[u8]) -> Option<usize> {
+pub fn spawn_elf(data: &[u8], argv0: &str) -> Option<usize> {
     unsafe {
         let parent_pid = current_pid();
 
@@ -206,11 +302,14 @@ pub fn spawn_elf(data: &[u8]) -> Option<usize> {
         let pt_phys = crate::arch::create_empty_process_page_table()?;
 
         // Parse and map ELF segments into pt_phys
-        let (entry, heap_start) = crate::elf::load(data, pt_phys)?;
+        let (entry, heap_start, phdr_va, phnum, phentsize) = crate::elf::load(data, pt_phys)?;
 
-        // Allocate and map one user stack page
+        // Allocate and map one user stack page.
+        // Use USER_ELF_STACK_TOP which is 256 MiB above USER_BASE_VA — well
+        // above any binary's BSS so there is no overlap with PT_LOAD segments.
+        let stack_top      = crate::arch::USER_ELF_STACK_TOP;
         let ustack_phys    = crate::memory::alloc_pages(1)?;
-        let ustack_page_va = crate::arch::USER_STACK_TOP - 4096;
+        let ustack_page_va = stack_top - 4096;
         core::ptr::write_bytes(ustack_phys as *mut u8, 0, 4096);
         if !crate::arch::map_user_page(
             pt_phys, ustack_page_va, ustack_phys,
@@ -220,7 +319,7 @@ pub fn spawn_elf(data: &[u8]) -> Option<usize> {
         }
 
         let user_rip = entry as u64;
-        let user_rsp = crate::arch::USER_STACK_TOP as u64;
+        let user_rsp = setup_abi_stack(ustack_phys, stack_top, argv0, phdr_va, phnum, phentsize) as u64;
 
         let kstack    = core::slice::from_raw_parts_mut(kstack_phys as *mut u8, STACK_SIZE);
         let kernel_sp = crate::arch::task_init_userspace_stack(kstack, user_rip, user_rsp);
@@ -233,7 +332,7 @@ pub fn spawn_elf(data: &[u8]) -> Option<usize> {
             let mut task = Task::new_user(kernel_sp, stack_top, pt_phys, parent_pid);
             task.context.ip = user_rip;
             task.context.sp = user_rsp;
-            task.heap_brk   = heap_start as u64; // initial break = end of last segment
+            task.heap_brk   = heap_start as u64;
             GUARD_PHYS[i]   = guard_phys;
             TASKS[i]        = Some(task);
             return Some(i);
@@ -246,13 +345,20 @@ pub fn spawn_elf(data: &[u8]) -> Option<usize> {
 /// table and heap_brk, then set up a new kernel stack so the child enters
 /// user mode at `user_ip` / `user_sp` and returns 0 from the fork syscall.
 ///
+/// `regs` are the 6 syscall argument registers at the time of the call — a real
+/// clone()/fork() preserves them across the fork, and libc's `__clone` trampoline
+/// on x86_64 depends on that (see `task_init_fork_stack`).
+///
 /// Returns the new task slot, or None on OOM / run queue full.
-pub fn spawn_fork(user_ip: u64, user_sp: u64) -> Option<usize> {
+pub fn spawn_fork(user_ip: u64, user_sp: u64, regs: [u64; 6], callee_saved: [u64; 6]) -> Option<usize> {
     unsafe {
         let parent_pid = current_pid();
         let parent_pt  = current_page_table_phys();
         let parent_brk = current_heap_brk();
         let parent_fdt = TASKS[CURRENT].as_ref()?.fd_table;
+        // Read live, not the saved copy: the parent is still the running task, so
+        // its FS.base MSR (TLS pointer) hasn't been flushed into TASKS[CURRENT] yet.
+        let parent_fs_base = crate::arch::read_fs_base();
 
         // New kernel stack (guard + 8 pages)
         let kframes     = crate::memory::alloc_pages(1 + STACK_PAGES)?;
@@ -264,9 +370,13 @@ pub fn spawn_fork(user_ip: u64, user_sp: u64) -> Option<usize> {
         // Deep-copy parent's address space
         let child_pt = crate::arch::clone_user_page_table(parent_pt)?;
 
-        // Kernel stack: child resumes at user_ip with user_sp, returns 0
+        // Kernel stack: child resumes at user_ip with user_sp, rax=0 (fork returns 0 in child)
         let kstack    = core::slice::from_raw_parts_mut(kstack_phys as *mut u8, STACK_SIZE);
-        let kernel_sp = crate::arch::task_init_userspace_stack(kstack, user_ip, user_sp);
+        let kernel_sp = crate::arch::task_init_fork_stack(
+            kstack, user_ip, user_sp,
+            regs[0], regs[1], regs[2], regs[3], regs[4], regs[5],
+            callee_saved,
+        );
         let stack_top = (kstack_phys + STACK_SIZE) as u64;
 
         let parent_cwd = current_cwd();
@@ -279,6 +389,19 @@ pub fn spawn_fork(user_ip: u64, user_sp: u64) -> Option<usize> {
             task.heap_brk  = parent_brk;
             task.fd_table  = parent_fdt;
             task.cwd       = parent_cwd;
+            task.fs_base   = parent_fs_base;
+            // Increment pipe reference counts for any pipe FDs inherited by child.
+            for fd in &task.fd_table.entries {
+                match fd {
+                    crate::process::FdEntry::PipeRead  { idx } => crate::ipc::dup_pipe_read(*idx),
+                    crate::process::FdEntry::PipeWrite { idx } => crate::ipc::dup_pipe_write(*idx),
+                    crate::process::FdEntry::SocketPair { read_idx, write_idx } => {
+                        crate::ipc::dup_pipe_read(*read_idx);
+                        crate::ipc::dup_pipe_write(*write_idx);
+                    }
+                    _ => {}
+                }
+            }
             GUARD_PHYS[i]  = guard_phys;
             TASKS[i]       = Some(task);
             return Some(i);
@@ -290,13 +413,14 @@ pub fn spawn_fork(user_ip: u64, user_sp: u64) -> Option<usize> {
 /// Replace the current task's address space in-place with a fresh ELF binary.
 /// Returns (new_entry, new_stack_top, new_pt_phys) on success.
 /// The caller (trap handler) must redirect sepc/rip and switch address space.
-pub fn execve_current(data: &[u8]) -> Option<(u64, u64, u64)> {
+pub fn execve_current(data: &[u8], argv0: &str) -> Option<(u64, u64, u64)> {
     unsafe {
         let new_pt = crate::arch::create_empty_process_page_table()?;
-        let (entry, heap_start) = crate::elf::load(data, new_pt)?;
+        let (entry, heap_start, phdr_va, phnum, phentsize) = crate::elf::load(data, new_pt)?;
 
+        let stack_top      = crate::arch::USER_ELF_STACK_TOP;
         let ustack_phys    = crate::memory::alloc_pages(1)?;
-        let ustack_page_va = crate::arch::USER_STACK_TOP - 4096;
+        let ustack_page_va = stack_top - 4096;
         core::ptr::write_bytes(ustack_phys as *mut u8, 0, 4096);
         if !crate::arch::map_user_page(
             new_pt, ustack_page_va, ustack_phys,
@@ -305,13 +429,17 @@ pub fn execve_current(data: &[u8]) -> Option<(u64, u64, u64)> {
             return None;
         }
 
+        let user_rsp = setup_abi_stack(ustack_phys, stack_top, argv0, phdr_va, phnum, phentsize);
+
         let task = TASKS[CURRENT].as_mut()?;
         // Old page table and its mapped frames are leaked — a page-table walker is
         // needed to free them properly; deferred until memory management matures.
         task.page_table_phys = new_pt;
         task.heap_brk        = heap_start as u64;
+        task.fs_base         = 0; // clear stale TLS from the old process image
+        crate::arch::write_fs_base(0);
 
-        Some((entry as u64, crate::arch::USER_STACK_TOP as u64, new_pt))
+        Some((entry as u64, user_rsp as u64, new_pt))
     }
 }
 
@@ -337,6 +465,8 @@ pub fn exit_current(code: i32) {
             t.exit(code);               // marks Zombie, closes FDs
             wake_child_waiters(pid, ppid);
             signal_parent(ppid, SIGCHLD);
+            // Wake any tasks blocked reading from a pipe whose write end just closed.
+            wake_closed_pipe_readers();
         }
         schedule();
     }
@@ -379,7 +509,7 @@ fn signal_parent(parent_pid: u64, sig: u8) {
 /// status to `*status_out` (WEXITSTATUS encoding).
 /// Returns the reaped PID on success, or a negative errno:
 ///   -10 (ECHILD) if no matching children exist.
-pub fn waitpid(target_pid: u64, status_out: *mut i32) -> isize {
+pub fn waitpid(target_pid: u64, status_out: *mut i32, no_hang: bool) -> isize {
     unsafe {
         let irqs_on = crate::arch::save_and_disable_interrupts();
         let cur_pid = TASKS[CURRENT].as_ref().map(|t| t.pid).unwrap_or(0);
@@ -417,6 +547,11 @@ pub fn waitpid(target_pid: u64, status_out: *mut i32) -> isize {
             if !has_child {
                 crate::arch::restore_interrupt_state(irqs_on);
                 return -10; // -ECHILD
+            }
+
+            if no_hang {
+                crate::arch::restore_interrupt_state(irqs_on);
+                return 0; // WNOHANG: no zombie yet, return immediately
             }
 
             // Block until a child exits (wake_child_waiters sets us Ready).
@@ -481,6 +616,23 @@ pub fn wake_pipe_waiter(pipe_idx: u8) {
         if let Some(slot) = PIPE_WAITERS[pipe_idx as usize].take() {
             if let Some(t) = TASKS[slot].as_mut() {
                 if t.state == TaskState::Blocked { t.state = TaskState::Ready; }
+            }
+        }
+    }
+}
+
+/// Wake any tasks blocked on pipes whose write end is now fully closed.
+/// Called after a task exits and its pipe FDs are released.
+fn wake_closed_pipe_readers() {
+    unsafe {
+        for (pipe_idx, waiter_slot) in PIPE_WAITERS.iter_mut().enumerate() {
+            if waiter_slot.is_none() { continue; }
+            if !crate::ipc::pipe_write_open(pipe_idx as u8) {
+                if let Some(slot) = waiter_slot.take() {
+                    if let Some(t) = TASKS[slot].as_mut() {
+                        if t.state == TaskState::Blocked { t.state = TaskState::Ready; }
+                    }
+                }
             }
         }
     }

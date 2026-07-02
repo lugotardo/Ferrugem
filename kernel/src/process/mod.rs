@@ -5,6 +5,7 @@
 pub const SIGHUP:  u8 =  1;
 pub const SIGINT:  u8 =  2;
 pub const SIGQUIT: u8 =  3;
+pub const SIGABRT: u8 =  6;
 pub const SIGKILL: u8 =  9;
 pub const SIGTERM: u8 = 15;
 pub const SIGCHLD: u8 = 17;
@@ -29,6 +30,12 @@ pub enum FdEntry {
     VfsDir  { inode: usize, pos: usize },
     PipeRead  { idx: u8 },
     PipeWrite { idx: u8 },
+    /// One end of a socketpair(2): reads from `read_idx`, writes to `write_idx`
+    /// (two independent pipes wired crosswise so both ends can read and write).
+    SocketPair { read_idx: u8, write_idx: u8 },
+    DevNull,
+    DevZero,
+    DevUrandom,
 }
 
 #[derive(Clone, Copy)]
@@ -80,6 +87,10 @@ impl FdTable {
         match self.entries[fd] {
             FdEntry::PipeRead  { idx } => crate::ipc::close_pipe_read(idx),
             FdEntry::PipeWrite { idx } => crate::ipc::close_pipe_write(idx),
+            FdEntry::SocketPair { read_idx, write_idx } => {
+                crate::ipc::close_pipe_read(read_idx);
+                crate::ipc::close_pipe_write(write_idx);
+            }
             _ => {}
         }
         self.entries[fd] = entry;
@@ -101,6 +112,10 @@ impl FdTable {
             match self.entries[i] {
                 FdEntry::PipeRead  { idx } => crate::ipc::close_pipe_read(idx),
                 FdEntry::PipeWrite { idx } => crate::ipc::close_pipe_write(idx),
+                FdEntry::SocketPair { read_idx, write_idx } => {
+                    crate::ipc::close_pipe_read(read_idx);
+                    crate::ipc::close_pipe_write(write_idx);
+                }
                 _ => {}
             }
             self.entries[i] = FdEntry::Empty;

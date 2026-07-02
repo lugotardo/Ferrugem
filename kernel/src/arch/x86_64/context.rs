@@ -42,6 +42,38 @@ pub unsafe extern "C" fn user_enter_trampoline() {
     core::arch::naked_asm!("iretq");
 }
 
+/// Like `user_enter_trampoline` but zeroes rax first so fork() returns 0 in the child,
+/// and restores rdi/rsi/rdx/r10/r8/r9 (the 6 syscall argument registers) plus
+/// rbx/rbp/r12-r15 (SysV callee-saved) to their values at the clone()/fork() call.
+///
+/// A real clone() syscall preserves every register except rax/rcx/r11 across the
+/// fork — it duplicates the entire register file, not just the syscall args.
+/// libc's `__clone` trampoline relies on this, keeping its entry-point function
+/// pointer in r9 (not on the stack) and calling `*r9` in the child after the
+/// syscall returns; compiled callee-saved usage (musl's posix_spawn `child()`
+/// keeps `errno`-pointer-derived values, argv, etc. in r12-r15/rbx/rbp across the
+/// call) depends on the rest. Without restoring all of these, the child either
+/// jumps to garbage or dereferences NULL/stale pointers built from zeroed regs.
+#[unsafe(naked)]
+pub unsafe extern "C" fn fork_enter_trampoline() {
+    core::arch::naked_asm!(
+        "xor eax, eax",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop r10",
+        "pop r8",
+        "pop r9",
+        "pop rbx",
+        "pop rbp",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "iretq",
+    );
+}
+
 /// Build a kernel stack for a new userspace task.
 ///
 /// When `context_switch` resumes this task it pops 6 saved registers, then
@@ -78,6 +110,76 @@ pub unsafe fn task_init_userspace_stack(stack: &mut [u8], user_rip: u64, user_rs
     sp.add(9).write(0x202); // RFLAGS: IF=1, reserved bit 1
     sp.add(10).write(user_rsp);
     sp.add(11).write(USER_DATA_SEL as u64);
+    sp as u64
+}
+
+/// Same layout as `task_init_userspace_stack` but uses `fork_enter_trampoline`
+/// so the child sees rax=0 when it enters userspace (fork returns 0 in child),
+/// with rdi/rsi/rdx/r10/r8/r9 and rbx/rbp/r12-r15 restored to their values at
+/// the clone()/fork() call (see `fork_enter_trampoline` for why this matters).
+///
+/// `callee_saved` is [rbx, rbp, r12, r13, r14, r15].
+///
+/// Stack layout from `kernel_sp` upward (24 × 8 = 192 bytes):
+///   [0]  r15 = 0
+///   [1]  r14 = 0
+///   [2]  r13 = 0
+///   [3]  r12 = 0
+///   [4]  rbp = 0
+///   [5]  rbx = 0                  ← these 6 are consumed by context_switch's own
+///                                    pop sequence, unrelated to the real values below
+///   [6]  &fork_enter_trampoline   ← context_switch's `ret` target
+///   [7]  rdi (a0)                 ┐
+///   [8]  rsi (a1)                 │
+///   [9]  rdx (a2)                 │ popped by fork_enter_trampoline
+///   [10] r10 (a3)                 │
+///   [11] r8  (a4)                 │
+///   [12] r9  (a5)                 │
+///   [13] rbx (callee_saved[0])    │
+///   [14] rbp (callee_saved[1])    │
+///   [15] r12 (callee_saved[2])    │
+///   [16] r13 (callee_saved[3])    │
+///   [17] r14 (callee_saved[4])    │
+///   [18] r15 (callee_saved[5])    ┘ before the iretq below
+///   [19] user_rip                 ┐
+///   [20] USER_CODE_SEL (0x1B)     │
+///   [21] RFLAGS = 0x202           │ iretq frame
+///   [22] user_rsp                 │
+///   [23] USER_DATA_SEL (0x23)     ┘
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn task_init_fork_stack(
+    stack: &mut [u8], user_rip: u64, user_rsp: u64,
+    a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64,
+    callee_saved: [u64; 6],
+) -> u64 {
+    use super::gdt::{USER_CODE_SEL, USER_DATA_SEL};
+    let top = stack.as_mut_ptr().add(stack.len()) as usize;
+    let top = top & !0xF;
+    let sp = (top - 24 * 8) as *mut u64;
+    sp.add(0).write(0); // r15
+    sp.add(1).write(0); // r14
+    sp.add(2).write(0); // r13
+    sp.add(3).write(0); // r12
+    sp.add(4).write(0); // rbp
+    sp.add(5).write(0); // rbx
+    sp.add(6).write(fork_enter_trampoline as u64);
+    sp.add(7).write(a0);
+    sp.add(8).write(a1);
+    sp.add(9).write(a2);
+    sp.add(10).write(a3);
+    sp.add(11).write(a4);
+    sp.add(12).write(a5);
+    sp.add(13).write(callee_saved[0]);
+    sp.add(14).write(callee_saved[1]);
+    sp.add(15).write(callee_saved[2]);
+    sp.add(16).write(callee_saved[3]);
+    sp.add(17).write(callee_saved[4]);
+    sp.add(18).write(callee_saved[5]);
+    sp.add(19).write(user_rip);
+    sp.add(20).write(USER_CODE_SEL as u64);
+    sp.add(21).write(0x202);
+    sp.add(22).write(user_rsp);
+    sp.add(23).write(USER_DATA_SEL as u64);
     sp as u64
 }
 

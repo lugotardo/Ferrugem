@@ -3,7 +3,7 @@
 /// Numbers match Linux x86_64; RISC-V uses the same numbers.
 /// Negative return values are errno values (e.g. -2 = ENOENT, -22 = EINVAL).
 
-use crate::process::FdEntry;
+use crate::process::{FdEntry, SIGKILL, SIGTERM, SIGABRT, SIGQUIT, SIGHUP};
 use crate::vfs::InodeKind;
 
 // ── saved user context ────────────────────────────────────────────────────────
@@ -14,6 +14,12 @@ static mut SYSCALL_USER_SP: u64 = 0;
 pub fn set_user_ctx(ip: u64, sp: u64) {
     unsafe { SYSCALL_USER_IP = ip; SYSCALL_USER_SP = sp; }
 }
+
+/// The 6 syscall argument registers (rdi/rsi/rdx/r10/r8/r9 on x86_64), captured
+/// once per syscall entry. A real clone()/fork() preserves all of them across the
+/// fork; `sys_clone`/`sys_fork` hand these to `spawn_fork` so the child resumes
+/// with the exact same values (see `task_init_fork_stack`).
+static mut SYSCALL_USER_REGS: [u64; 6] = [0; 6];
 
 // ── exec redirect (set by sys_execve, consumed by arch trap handler) ──────────
 
@@ -31,6 +37,7 @@ pub fn take_exec_ctx() -> Option<(u64, u64, u64)> {
 
 pub const SYS_READ:          usize = 0;
 pub const SYS_WRITE:         usize = 1;
+pub const SYS_POLL:          usize = 7;
 pub const SYS_RT_SIGACTION:  usize = 13;
 pub const SYS_RT_SIGPROCMASK: usize = 14;
 pub const SYS_RT_SIGRETURN:  usize = 15;
@@ -44,6 +51,9 @@ pub const SYS_MMAP:          usize = 9;
 pub const SYS_MUNMAP:        usize = 11;
 pub const SYS_BRK:           usize = 12;
 pub const SYS_IOCTL:         usize = 16;
+pub const SYS_SOCKETPAIR:    usize = 53;
+pub const SYS_SENDTO:        usize = 44;
+pub const SYS_RECVFROM:      usize = 45;
 pub const SYS_PIPE:          usize = 22;
 pub const SYS_YIELD:         usize = 24;
 pub const SYS_DUP:           usize = 32;
@@ -61,6 +71,7 @@ pub const SYS_GETGID:        usize = 104;
 pub const SYS_GETEUID:       usize = 107;
 pub const SYS_GETEGID:       usize = 108;
 pub const SYS_GETPPID:       usize = 110;
+pub const SYS_CLONE:         usize = 56;
 pub const SYS_FORK:          usize = 57;
 pub const SYS_EXECVE:        usize = 59;
 pub const SYS_EXIT:          usize = 60;
@@ -75,11 +86,13 @@ pub const SYS_GETTID:        usize = 186;
 pub const SYS_TKILL:         usize = 200;
 pub const SYS_FUTEX:         usize = 202;
 pub const SYS_SET_ROBUST_LIST: usize = 273;
+pub const SYS_PIPE2:         usize = 293;
 pub const SYS_SET_TID_ADDRESS: usize = 218;
 pub const SYS_TGKILL:        usize = 234;
 pub const SYS_MPROTECT:      usize = 10;
 pub const SYS_PRLIMIT64:     usize = 302;
 pub const SYS_GETRANDOM:     usize = 318;
+pub const SYS_SIGALTSTACK:   usize = 131;
 pub const SYS_OPENAT:        usize = 257;
 pub const SYS_NEWFSTATAT:    usize = 262;
 pub const SYS_READLINKAT:    usize = 267;
@@ -89,15 +102,20 @@ pub const SYS_MKDIRAT:       usize = 258;
 
 // ── dispatcher ────────────────────────────────────────────────────────────────
 
-pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isize {
+pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> isize {
+    unsafe {
+        SYSCALL_USER_REGS = [a0 as u64, a1 as u64, a2 as u64, a3 as u64, a4 as u64, a5 as u64];
+    }
     match nr {
         SYS_READ          => sys_read(a0, a1 as *mut u8, a2),
         SYS_WRITE         => sys_write(a0, a1 as *const u8, a2),
+        SYS_POLL          => sys_poll(a0, a1, a2 as i32),
         SYS_RT_SIGACTION  => sys_rt_sigaction(a0, a1, a2, a3),
         SYS_RT_SIGPROCMASK => sys_rt_sigprocmask(a0, a1, a2, a3),
         SYS_RT_SIGRETURN  => 0,
         SYS_ARCH_PRCTL    => sys_arch_prctl(a0, a1),
         SYS_MPROTECT      => 0,  // stub: pretend all protection changes succeed
+        SYS_SIGALTSTACK   => sys_sigaltstack(a0, a1),
         SYS_GETTID        => sys_getpid(), // single-threaded: TID == PID
         SYS_TKILL         => sys_kill(a0, a1),
         SYS_TGKILL        => sys_kill(a1, a2), // tgkill(tgid, tid, sig) — tid==PID
@@ -118,11 +136,15 @@ pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isize 
         SYS_FSTAT         => sys_fstat(a0, a1 as *mut Stat),
         SYS_LSTAT         => sys_stat(a0 as *const u8, a1 as *mut Stat),
         SYS_LSEEK         => sys_lseek(a0, a1 as i64, a2),
-        SYS_MMAP          => sys_mmap(a0, a1, a2, a3),
+        SYS_MMAP          => sys_mmap(a0, a1, a2, a3, a4, a5),
         SYS_MUNMAP        => sys_munmap(a0, a1),
         SYS_BRK           => sys_brk(a0),
         SYS_IOCTL         => sys_ioctl(a0, a1, a2),
         SYS_PIPE          => sys_pipe(a0 as *mut i32),
+        SYS_PIPE2         => sys_pipe(a0 as *mut i32), // flags (O_CLOEXEC etc.) ignored for now
+        SYS_SOCKETPAIR    => sys_socketpair(a3 as *mut i32), // domain/type/protocol ignored — only AF_UNIX use case supported
+        SYS_SENDTO        => sys_write(a0, a1 as *const u8, a2), // dest_addr/flags ignored — connected AF_UNIX socketpair only
+        SYS_RECVFROM      => sys_read(a0, a1 as *mut u8, a2),  // src_addr/flags ignored — connected AF_UNIX socketpair only
         SYS_YIELD         => sys_yield(),
         SYS_DUP           => sys_dup(a0),
         SYS_DUP2          => sys_dup2(a0, a1),
@@ -136,6 +158,7 @@ pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> isize 
         SYS_UNLINK        => sys_unlink(a0 as *const u8),
         SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => 0,
         SYS_GETPPID       => sys_getppid(),
+        SYS_CLONE         => sys_clone(a0, a1),
         SYS_FORK          => sys_fork(),
         SYS_EXECVE        => sys_execve(a0, a1, a2),
         SYS_EXIT          => sys_exit(a0 as i32),
@@ -160,6 +183,20 @@ unsafe fn read_path<'a>(ptr: *const u8) -> Option<&'a str> {
 
 // ── read ──────────────────────────────────────────────────────────────────────
 
+/// Echo a byte read from Stdin back to the console/serial output.
+///
+/// The kernel doesn't implement a full TTY line discipline, but without any
+/// echo at all, typed input is completely invisible on both the serial
+/// terminal and the VGA console — userspace programs (like the shell) just
+/// read raw bytes and never see them reflected back.
+fn echo_stdin_byte(b: u8) {
+    match b {
+        b'\r' | b'\n' => crate::drivers::serial::print_bytes(b"\r\n"),
+        0x7f | 0x08   => crate::drivers::serial::print_bytes(b"\x08 \x08"),
+        _             => crate::drivers::serial::write_byte(b),
+    }
+}
+
 fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
     if len == 0 { return 0; }
     if buf.is_null() { return -14; } // EFAULT
@@ -173,11 +210,21 @@ fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
         FdEntry::Stdin => {
             loop {
                 if let Some(b) = crate::drivers::serial::read_byte() {
+                    echo_stdin_byte(b);
+                    // ICRNL: a real terminal in raw mode (which is what QEMU's
+                    // -serial stdio puts the host terminal into) sends '\r' for
+                    // the Enter key, not '\n'. Userspace line readers (Rust's
+                    // BufRead::read_line, musl's getline) only treat '\n' as a
+                    // line terminator, so without this translation Enter never
+                    // completes a line — it just silently hangs forever.
+                    let b = if b == b'\r' { b'\n' } else { b };
                     unsafe { *buf = b };
                     return 1;
                 }
                 if let Some(sc) = crate::drivers::keyboard::read_scancode() {
                     if let Some(c) = crate::drivers::keyboard::scancode_to_ascii(sc) {
+                        echo_stdin_byte(c);
+                        let c = if c == b'\r' { b'\n' } else { c };
                         unsafe { *buf = c };
                         return 1;
                     }
@@ -201,6 +248,31 @@ fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
                 if !crate::ipc::pipe_write_open(idx) { return 0; }
                 crate::scheduler::block_on_pipe(idx);
             }
+        }
+        FdEntry::SocketPair { read_idx, .. } => {
+            loop {
+                let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+                let n = crate::ipc::pipe_read(read_idx, out);
+                if n > 0 { return n as isize; }
+                if !crate::ipc::pipe_write_open(read_idx) { return 0; }
+                crate::scheduler::block_on_pipe(read_idx);
+            }
+        }
+        FdEntry::DevNull => 0, // EOF
+        FdEntry::DevZero => {
+            unsafe { core::ptr::write_bytes(buf, 0, len); }
+            len as isize
+        }
+        FdEntry::DevUrandom => {
+            let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
+            let mut i = 0;
+            while i < out.len() {
+                let rnd = crate::arch::entropy_seed().to_le_bytes();
+                let take = (out.len() - i).min(8);
+                out[i..i+take].copy_from_slice(&rnd[..take]);
+                i += take;
+            }
+            len as isize
         }
         FdEntry::VfsDir { .. }              => -21, // EISDIR
         FdEntry::Stdout | FdEntry::Stderr   => -9,
@@ -242,6 +314,14 @@ fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
             if n > 0 { crate::scheduler::wake_pipe_waiter(idx); }
             n as isize
         }
+        FdEntry::SocketPair { write_idx, .. } => {
+            if !crate::ipc::pipe_read_open(write_idx) { return -32; } // EPIPE
+            let data = unsafe { core::slice::from_raw_parts(buf, len) };
+            let n = crate::ipc::pipe_write(write_idx, data);
+            if n > 0 { crate::scheduler::wake_pipe_waiter(write_idx); }
+            n as isize
+        }
+        FdEntry::DevNull | FdEntry::DevZero | FdEntry::DevUrandom => len as isize,
         FdEntry::VfsDir { .. }          => -21, // EISDIR
         FdEntry::Stdin                  => -9,
         FdEntry::PipeRead { .. }        => -9,
@@ -251,6 +331,16 @@ fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
 
 // ── open ──────────────────────────────────────────────────────────────────────
 
+fn open_dev_path(path: &str) -> Option<FdEntry> {
+    match path {
+        "/dev/null"                 => Some(FdEntry::DevNull),
+        "/dev/zero"                 => Some(FdEntry::DevZero),
+        "/dev/urandom" | "/dev/random" | "/dev/hwrng" => Some(FdEntry::DevUrandom),
+        "/dev/tty" | "/dev/console" => Some(FdEntry::Stdout),
+        _                           => None,
+    }
+}
+
 fn sys_open(path_ptr: *const u8, flags: usize, _mode: usize) -> isize {
     if path_ptr.is_null() { return -14; } // EFAULT
     let path = match unsafe { read_path(path_ptr) } {
@@ -258,10 +348,18 @@ fn sys_open(path_ptr: *const u8, flags: usize, _mode: usize) -> isize {
         _ => return -2, // ENOENT
     };
 
-    // O_WRONLY=1, O_RDWR=2, O_CREAT=0x40, O_TRUNC=0x200, O_DIRECTORY=0x10000
+    if let Some(dev) = open_dev_path(path) {
+        return match crate::scheduler::current_fd_alloc(dev) {
+            Some(fd) => fd as isize,
+            None     => -24, // EMFILE
+        };
+    }
+
+    // O_WRONLY=1, O_RDWR=2, O_CREAT=0x40, O_TRUNC=0x200, O_APPEND=0x400, O_DIRECTORY=0x10000
     let writable  = flags & 3 != 0;
     let create    = flags & 0x40 != 0;
     let truncate  = flags & 0x200 != 0;
+    let append    = flags & 0x400 != 0;
 
     let cwd = crate::scheduler::current_cwd();
 
@@ -270,7 +368,8 @@ fn sys_open(path_ptr: *const u8, flags: usize, _mode: usize) -> isize {
     match crate::fs::open_inode(path, cwd, 0, 0, writable) {
         Some(inode) => {
             if truncate && writable { crate::fs::write_inode(inode, 0, &[]); }
-            let entry = FdEntry::VfsFile { inode, offset: 0, writable };
+            let offset = if append && writable { crate::fs::inode_size(inode) as u64 } else { 0 };
+            let entry = FdEntry::VfsFile { inode, offset, writable };
             match crate::scheduler::current_fd_alloc(entry) {
                 Some(fd) => fd as isize,
                 None     => -24, // EMFILE
@@ -297,7 +396,22 @@ fn sys_close(fd: usize) -> isize {
     match crate::scheduler::current_fd_close(fd) {
         None => -9, // EBADF
         Some(FdEntry::PipeRead  { idx }) => { crate::ipc::close_pipe_read(idx);  0 }
-        Some(FdEntry::PipeWrite { idx }) => { crate::ipc::close_pipe_write(idx); 0 }
+        Some(FdEntry::PipeWrite { idx }) => {
+            crate::ipc::close_pipe_write(idx);
+            // If no write ends remain, wake any task blocked reading from this pipe.
+            if !crate::ipc::pipe_write_open(idx) {
+                crate::scheduler::wake_pipe_waiter(idx);
+            }
+            0
+        }
+        Some(FdEntry::SocketPair { read_idx, write_idx }) => {
+            crate::ipc::close_pipe_read(read_idx);
+            crate::ipc::close_pipe_write(write_idx);
+            if !crate::ipc::pipe_write_open(write_idx) {
+                crate::scheduler::wake_pipe_waiter(write_idx);
+            }
+            0
+        }
         Some(_) => 0,
     }
 }
@@ -354,12 +468,29 @@ unsafe fn fill_tty_stat(buf: *mut Stat, fd: usize) {
     (*buf).st_blksize = 1024;
 }
 
+unsafe fn fill_dev_stat(buf: *mut Stat, rdev: u64) {
+    core::ptr::write_bytes(buf as *mut u8, 0, core::mem::size_of::<Stat>());
+    (*buf).st_dev     = 1;
+    (*buf).st_ino     = rdev & 0xFF;
+    (*buf).st_nlink   = 1;
+    (*buf).st_mode    = 0x2180; // S_IFCHR | 0600
+    (*buf).st_rdev    = rdev;
+    (*buf).st_blksize = 4096;
+}
+
 fn sys_stat(path_ptr: *const u8, buf: *mut Stat) -> isize {
     if buf.is_null() { return -14; } // EFAULT
     let path = match unsafe { read_path(path_ptr) } {
         Some(s) if !s.is_empty() => s,
         _ => return -2,
     };
+    match path {
+        "/dev/null"    => { unsafe { fill_dev_stat(buf, (1<<8)|3); } return 0; }
+        "/dev/zero"    => { unsafe { fill_dev_stat(buf, (1<<8)|5); } return 0; }
+        "/dev/urandom" | "/dev/random" => { unsafe { fill_dev_stat(buf, (1<<8)|9); } return 0; }
+        "/dev/tty" | "/dev/console" => { unsafe { fill_tty_stat(buf, 0); } return 0; }
+        _ => {}
+    }
     let cwd = crate::scheduler::current_cwd();
     let idx = match crate::fs::resolve(path, cwd) {
         Some(i) => i,
@@ -379,6 +510,23 @@ fn sys_fstat(fd: usize, buf: *mut Stat) -> isize {
         FdEntry::VfsDir  { inode, .. } => unsafe { fill_inode_stat(buf, inode) },
         FdEntry::Stdin | FdEntry::Stdout | FdEntry::Stderr => {
             unsafe { fill_tty_stat(buf, fd); }
+            0
+        }
+        FdEntry::DevNull | FdEntry::DevZero | FdEntry::DevUrandom => {
+            unsafe {
+                core::ptr::write_bytes(buf as *mut u8, 0, core::mem::size_of::<Stat>());
+                (*buf).st_dev  = 1;
+                (*buf).st_ino  = 3;
+                (*buf).st_mode = 0x2180; // S_IFCHR | 0600
+                (*buf).st_rdev = match entry {
+                    FdEntry::DevNull    => (1 << 8) | 3,  // major=1 minor=3
+                    FdEntry::DevZero    => (1 << 8) | 5,  // major=1 minor=5
+                    FdEntry::DevUrandom => (1 << 8) | 9,  // major=1 minor=9
+                    _ => 0,
+                };
+                (*buf).st_blksize = 4096;
+                (*buf).st_nlink   = 1;
+            }
             0
         }
         _ => -9, // EBADF (pipes)
@@ -425,8 +573,11 @@ fn sys_brk(addr: usize) -> isize {
 
 // ── mmap / munmap ─────────────────────────────────────────────────────────────
 
-fn sys_mmap(addr: usize, len: usize, prot: usize, _flags: usize) -> isize {
+fn sys_mmap(addr: usize, len: usize, prot: usize, flags: usize, _fd: usize, _offset: usize) -> isize {
     if len == 0 { return -22; } // EINVAL
+    const MAP_ANONYMOUS: usize = 0x20;
+    // Only anonymous mappings supported; file-backed mmap returns ENOSYS.
+    if flags & MAP_ANONYMOUS == 0 { return -38; } // ENOSYS
     let pt_phys = crate::scheduler::current_page_table_phys();
     if pt_phys == 0 { return -22; }
 
@@ -525,6 +676,41 @@ fn sys_pipe(fds_ptr: *mut i32) -> isize {
         _ => {
             crate::ipc::close_pipe_read(idx);
             crate::ipc::close_pipe_write(idx);
+            -24 // EMFILE
+        }
+    }
+}
+
+// ── socketpair ────────────────────────────────────────────────────────────────
+//
+// We don't have real sockets, but musl/libstd only use socketpair(AF_UNIX, ...)
+// as a bidirectional byte channel (e.g. Rust's std uses one for exec-error
+// reporting when spawning via the plain fork()+exec() path). Two independent
+// pipes wired crosswise give each end an fd that supports both read and write.
+fn sys_socketpair(sv_ptr: *mut i32) -> isize {
+    if sv_ptr.is_null() { return -14; } // EFAULT
+    let (a, b) = match (crate::ipc::alloc_pipe(), crate::ipc::alloc_pipe()) {
+        (Some(a), Some(b)) => (a, b),
+        (a, b) => {
+            if let Some(a) = a { crate::ipc::close_pipe_read(a); crate::ipc::close_pipe_write(a); }
+            if let Some(b) = b { crate::ipc::close_pipe_read(b); crate::ipc::close_pipe_write(b); }
+            return -24; // EMFILE
+        }
+    };
+    // fd0 reads from `a` (written only by fd1) and writes to `b` (read only by fd1);
+    // fd1 is the mirror image. Each pipe ends up with exactly the 1 reader + 1
+    // writer that alloc_pipe() already assumes, so no ref-count adjustment needed.
+    let fd0 = crate::scheduler::current_fd_alloc(FdEntry::SocketPair { read_idx: a, write_idx: b });
+    let fd1 = crate::scheduler::current_fd_alloc(FdEntry::SocketPair { read_idx: b, write_idx: a });
+    match (fd0, fd1) {
+        (Some(f0), Some(f1)) => {
+            unsafe { *sv_ptr = f0 as i32; *sv_ptr.add(1) = f1 as i32; }
+            0
+        }
+        _ => {
+            crate::ipc::close_pipe_read(a);
+            crate::ipc::close_pipe_write(b);
+            crate::ipc::close_pipe_read(b);
             -24 // EMFILE
         }
     }
@@ -659,7 +845,7 @@ fn sys_execve(path_ptr: usize, _argv: usize, _envp: usize) -> isize {
 
     if !crate::elf::is_elf(data) { return -8; } // ENOEXEC
 
-    match crate::scheduler::execve_current(data) {
+    match crate::scheduler::execve_current(data, path) {
         Some((ip, sp, pt)) => { set_exec_ctx(ip, sp, pt); 0 }
         None               => -12, // ENOMEM
     }
@@ -693,16 +879,147 @@ fn sys_getppid() -> isize { crate::scheduler::current_ppid() as isize }
 
 // ── wait4 ─────────────────────────────────────────────────────────────────────
 
-fn sys_wait4(pid: i64, status_ptr: *mut i32, _options: usize) -> isize {
+fn sys_wait4(pid: i64, status_ptr: *mut i32, options: usize) -> isize {
+    const WNOHANG: usize = 1;
     let target = if pid == -1 { u64::MAX } else { pid as u64 };
-    crate::scheduler::waitpid(target, status_ptr)
+    crate::scheduler::waitpid(target, status_ptr, options & WNOHANG != 0)
+}
+
+// ── sigaltstack ───────────────────────────────────────────────────────────────
+//
+// struct stack_t: { ss_sp: *void (8), ss_flags: i32 (4), _pad: u32 (4), ss_size: usize (8) }
+// SS_DISABLE = 2, SS_ONSTACK = 1
+
+fn sys_sigaltstack(ss: usize, old_ss: usize) -> isize {
+    // If the caller wants the old stack: report SS_DISABLE (no alternate stack set).
+    if old_ss != 0 {
+        unsafe { core::ptr::write_bytes(old_ss as *mut u8, 0, 24); }
+        // ss_flags at offset 8
+        unsafe { *((old_ss + 8) as *mut i32) = 2; } // SS_DISABLE
+    }
+    let _ = ss;
+    0
+}
+
+// ── poll ──────────────────────────────────────────────────────────────────────
+
+#[repr(C)]
+struct PollFd {
+    fd:      i32,
+    events:  i16,
+    revents: i16,
+}
+
+const POLLIN:   i16 = 0x001;
+const POLLOUT:  i16 = 0x004;
+const POLLERR:  i16 = 0x008;
+const POLLHUP:  i16 = 0x010;
+const POLLNVAL: i16 = 0x020;
+
+fn sys_poll(fds_ptr: usize, nfds: usize, timeout_ms: i32) -> isize {
+    if nfds == 0 { return 0; }
+    if fds_ptr == 0 { return -14; } // EFAULT
+
+    let fds = unsafe { core::slice::from_raw_parts_mut(fds_ptr as *mut PollFd, nfds) };
+    let mut ready = 0i32;
+
+    for pfd in fds.iter_mut() {
+        pfd.revents = 0;
+        if pfd.fd < 0 { continue; }
+        let fd = pfd.fd as usize;
+        let ev = pfd.events;
+
+        let Some(entry) = crate::scheduler::current_fd_get(fd) else {
+            pfd.revents = POLLNVAL;
+            ready += 1;
+            continue;
+        };
+
+        match entry {
+            FdEntry::Stdin => {
+                // Report POLLIN only if data is actually available (non-blocking check).
+                let has_data = crate::drivers::serial::has_input()
+                    || crate::drivers::keyboard::has_input();
+                if ev & POLLIN != 0 && has_data {
+                    pfd.revents |= POLLIN;
+                    ready += 1;
+                }
+            }
+            FdEntry::Stdout | FdEntry::Stderr
+            | FdEntry::DevNull | FdEntry::DevZero | FdEntry::DevUrandom => {
+                if ev & POLLOUT != 0 { pfd.revents |= POLLOUT; ready += 1; }
+            }
+            FdEntry::VfsFile { .. } => {
+                let want = ev & (POLLIN | POLLOUT);
+                if want != 0 { pfd.revents |= want; ready += 1; }
+            }
+            FdEntry::PipeRead { idx } => {
+                if ev & POLLIN != 0 {
+                    if crate::ipc::pipe_has_data(idx) {
+                        pfd.revents |= POLLIN; ready += 1;
+                    } else if !crate::ipc::pipe_write_open(idx) {
+                        pfd.revents |= POLLHUP; ready += 1;
+                    }
+                }
+            }
+            FdEntry::PipeWrite { idx } => {
+                if ev & POLLOUT != 0 {
+                    if crate::ipc::pipe_read_open(idx) {
+                        pfd.revents |= POLLOUT; ready += 1;
+                    } else {
+                        pfd.revents |= POLLERR | POLLHUP; ready += 1;
+                    }
+                }
+            }
+            FdEntry::SocketPair { read_idx, write_idx } => {
+                if ev & POLLIN != 0 {
+                    if crate::ipc::pipe_has_data(read_idx) {
+                        pfd.revents |= POLLIN; ready += 1;
+                    } else if !crate::ipc::pipe_write_open(read_idx) {
+                        pfd.revents |= POLLHUP; ready += 1;
+                    }
+                }
+                if ev & POLLOUT != 0 {
+                    if crate::ipc::pipe_read_open(write_idx) {
+                        pfd.revents |= POLLOUT; ready += 1;
+                    } else {
+                        pfd.revents |= POLLERR | POLLHUP; ready += 1;
+                    }
+                }
+            }
+            _ => { pfd.revents = POLLNVAL; ready += 1; }
+        }
+    }
+
+    if ready > 0 || timeout_ms == 0 {
+        return ready as isize;
+    }
+
+    // For blocking poll: yield once and return 0 (no events in this quantum).
+    crate::scheduler::schedule();
+    0
 }
 
 // ── kill ──────────────────────────────────────────────────────────────────────
 
+fn is_fatal(sig: u8) -> bool {
+    matches!(sig, SIGKILL | SIGTERM | SIGABRT | SIGQUIT | SIGHUP)
+}
+
 fn sys_kill(target_pid: usize, sig: usize) -> isize {
     let sig = sig as u8;
     if sig > 31 { return -22; } // EINVAL
+
+    // When a process sends a fatal signal to itself, exit immediately rather than
+    // waiting for the next deliver_all_signals() tick. This makes abort() terminate
+    // cleanly instead of falling through to `hlt` → #GP.
+    if sig > 0 && is_fatal(sig) {
+        let cur = crate::scheduler::current_pid() as u64;
+        if target_pid as u64 == cur || target_pid == 0 {
+            crate::scheduler::exit_current(sig as i32);
+        }
+    }
+
     if crate::scheduler::raise_signal_to_pid(target_pid as u64, sig) { 0 } else { -3 } // ESRCH
 }
 
@@ -733,16 +1050,38 @@ fn sys_uname(buf: *mut UtsName) -> isize {
         fill(&mut (*buf).version,  b"#1 SMP");
         #[cfg(target_arch = "x86_64")]  fill(&mut (*buf).machine, b"x86_64");
         #[cfg(target_arch = "riscv64")] fill(&mut (*buf).machine, b"riscv64");
+        #[cfg(target_arch = "aarch64")] fill(&mut (*buf).machine, b"aarch64");
     }
     0
 }
 
 // ── fork ──────────────────────────────────────────────────────────────────────
 
+fn sys_clone(flags: usize, child_stack: usize) -> isize {
+    const CLONE_THREAD: usize = 0x0001_0000;
+    // Threads not supported: if CLONE_THREAD is set, we'd need shared VM which we don't have.
+    if flags & CLONE_THREAD != 0 { return -38; }
+    // musl's posix_spawn calls clone(CLONE_VM|CLONE_VFORK, child_stack, ...) with a small,
+    // dedicated child_stack (not the caller's normal stack) — its userspace __clone trampoline
+    // resumes from that stack expecting to pop a function pointer + arg pushed there. Even
+    // though we deep-copy the page table instead of sharing it, the child must still resume
+    // with that exact stack pointer, or it ends up executing __clone's trampoline against the
+    // wrong (parent) stack contents and jumps to garbage.
+    let sp = if child_stack != 0 { child_stack as u64 } else { unsafe { SYSCALL_USER_SP } };
+    spawn_fork_with_sp(sp)
+}
+
 fn sys_fork() -> isize {
-    let (ip, sp) = unsafe { (SYSCALL_USER_IP, SYSCALL_USER_SP) };
+    let sp = unsafe { SYSCALL_USER_SP };
+    spawn_fork_with_sp(sp)
+}
+
+fn spawn_fork_with_sp(sp: u64) -> isize {
+    let ip = unsafe { SYSCALL_USER_IP };
     if ip == 0 { return -38; }
-    match crate::scheduler::spawn_fork(ip, sp) {
+    let regs = unsafe { SYSCALL_USER_REGS };
+    let callee_saved = crate::arch::user_callee_saved_snapshot();
+    match crate::scheduler::spawn_fork(ip, sp, regs, callee_saved) {
         Some(slot) => crate::scheduler::task_pid(slot) as isize,
         None       => -12, // ENOMEM
     }
@@ -756,6 +1095,8 @@ fn sys_lseek(fd: usize, offset: i64, whence: usize) -> isize {
         Some(FdEntry::VfsDir { .. })                 => return -21, // EISDIR
         Some(FdEntry::Stdin) | Some(FdEntry::Stdout) | Some(FdEntry::Stderr) => return -29, // ESPIPE
         Some(FdEntry::PipeRead { .. }) | Some(FdEntry::PipeWrite { .. })     => return -29,
+        Some(FdEntry::SocketPair { .. })                                    => return -29,
+        Some(FdEntry::DevNull) | Some(FdEntry::DevZero) | Some(FdEntry::DevUrandom) => return -29,
         _ => return -9, // EBADF
     };
     let file_size = crate::fs::inode_size(inode) as i64;
@@ -797,9 +1138,18 @@ fn sys_openat(dirfd: i64, path_ptr: *const u8, flags: usize, mode: usize) -> isi
         Some(s) if !s.is_empty() => s,
         _ => return -2,
     };
+
+    if let Some(dev) = open_dev_path(path) {
+        return match crate::scheduler::current_fd_alloc(dev) {
+            Some(fd) => fd as isize,
+            None     => -24,
+        };
+    }
+
     let writable = flags & 3 != 0;
     let create   = flags & 0x40 != 0;
     let truncate = flags & 0x200 != 0;
+    let append   = flags & 0x400 != 0;
     let cwd = at_cwd(dirfd);
 
     if create { crate::fs::touch(path, cwd, 0, 0); }
@@ -807,7 +1157,8 @@ fn sys_openat(dirfd: i64, path_ptr: *const u8, flags: usize, mode: usize) -> isi
     match crate::fs::open_inode(path, cwd, 0, 0, writable) {
         Some(inode) => {
             if truncate && writable { crate::fs::write_inode(inode, 0, &[]); }
-            let entry = FdEntry::VfsFile { inode, offset: 0, writable };
+            let offset = if append && writable { crate::fs::inode_size(inode) as u64 } else { 0 };
+            let entry = FdEntry::VfsFile { inode, offset, writable };
             match crate::scheduler::current_fd_alloc(entry) {
                 Some(fd) => fd as isize,
                 None     => -24,
@@ -839,6 +1190,13 @@ fn sys_newfstatat(dirfd: i64, path_ptr: *const u8, buf: *mut Stat, _flags: usize
         // AT_EMPTY_PATH: fstat on the fd itself
         let fd = if dirfd == AT_FDCWD { return -22 } else { dirfd as usize };
         return sys_fstat(fd, buf);
+    }
+    match path {
+        "/dev/null"    => { unsafe { fill_dev_stat(buf, (1<<8)|3); } return 0; }
+        "/dev/zero"    => { unsafe { fill_dev_stat(buf, (1<<8)|5); } return 0; }
+        "/dev/urandom" | "/dev/random" => { unsafe { fill_dev_stat(buf, (1<<8)|9); } return 0; }
+        "/dev/tty" | "/dev/console" => { unsafe { fill_tty_stat(buf, 0); } return 0; }
+        _ => {}
     }
     let cwd = at_cwd(dirfd);
     let idx = match crate::fs::resolve(path, cwd) {
@@ -918,7 +1276,12 @@ fn sys_futex(uaddr: usize, op: usize, val: usize) -> isize {
 // Full delivery of signals to userspace requires sigreturn trampolines (TODO).
 
 fn sys_rt_sigaction(sig: usize, act: usize, oact: usize, sigsetsize: usize) -> isize {
-    if sig == 0 || sig > 31 { return -22; } // EINVAL
+    // Linux supports signals 1..64 (32 standard + 32 realtime). musl's posix_spawn
+    // unconditionally walks that whole range restoring dispositions before exec —
+    // rejecting anything above 31 left `oact` completely uninitialized for every
+    // realtime signal, and the caller (not checking for EINVAL on a best-effort
+    // restore) went on to read that garbage as if it were a real old-disposition.
+    if sig == 0 || sig > 64 { return -22; } // EINVAL
     // If caller wants old action: return zeroed struct (SIG_DFL, no mask, no flags).
     if oact != 0 {
         // struct kernel_sigaction: sa_handler (8), sa_flags (8), sa_restorer (8), sa_mask (sigsetsize)

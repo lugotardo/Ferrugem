@@ -20,6 +20,8 @@ pub fn init_from_mmap(mmap: &MemoryMap) {
     let min_base: usize = 0x10_0000;
     #[cfg(target_arch = "riscv64")]
     let min_base: usize = 0x8000_0000;
+    #[cfg(target_arch = "aarch64")]
+    let min_base: usize = 0x4000_0000;
 
     let region = match mmap.largest_usable(min_base) {
         Some(r) => r,
@@ -48,6 +50,8 @@ fn init_fallback() {
     unsafe { MEM_BASE = 0x10_0000; TOTAL_FRAMES = (127 * 1024 * 1024) / 4096; FREE_FRAMES = TOTAL_FRAMES; }
     #[cfg(target_arch = "riscv64")]
     unsafe { MEM_BASE = 0x8000_0000; TOTAL_FRAMES = (128 * 1024 * 1024) / 4096; FREE_FRAMES = TOTAL_FRAMES; }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { MEM_BASE = 0x4000_0000; TOTAL_FRAMES = (128 * 1024 * 1024) / 4096; FREE_FRAMES = TOTAL_FRAMES; }
 }
 
 fn mark_used(frame: usize) {

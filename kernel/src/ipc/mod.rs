@@ -49,18 +49,18 @@ impl Pipe {
 
 // ── pipe pool ─────────────────────────────────────────────────────────────────
 
-pub const MAX_PIPES: usize = 4;
+pub const MAX_PIPES: usize = 8;
 
 struct PipeSlot {
-    pipe:       Pipe,
-    in_use:     bool,
-    read_open:  bool,
-    write_open: bool,
+    pipe:        Pipe,
+    in_use:      bool,
+    read_count:  u8, // number of open read ends (supports fork)
+    write_count: u8, // number of open write ends (supports fork)
 }
 
 impl PipeSlot {
     const fn new() -> Self {
-        Self { pipe: Pipe::new(), in_use: false, read_open: false, write_open: false }
+        Self { pipe: Pipe::new(), in_use: false, read_count: 0, write_count: 0 }
     }
 }
 
@@ -71,10 +71,10 @@ pub fn alloc_pipe() -> Option<u8> {
     unsafe {
         for (i, slot) in POOL.iter_mut().enumerate() {
             if !slot.in_use {
-                slot.pipe = Pipe::new();
-                slot.in_use     = true;
-                slot.read_open  = true;
-                slot.write_open = true;
+                slot.pipe        = Pipe::new();
+                slot.in_use      = true;
+                slot.read_count  = 1;
+                slot.write_count = 1;
                 return Some(i as u8);
             }
         }
@@ -82,36 +82,60 @@ pub fn alloc_pipe() -> Option<u8> {
     }
 }
 
-/// Close the read end of pipe `idx`.
+/// Increment the read reference count (called when fork copies a PipeRead fd).
+pub fn dup_pipe_read(idx: u8) {
+    unsafe {
+        let i = idx as usize;
+        if i < MAX_PIPES && POOL[i].in_use && POOL[i].read_count < 255 {
+            POOL[i].read_count += 1;
+        }
+    }
+}
+
+/// Increment the write reference count (called when fork copies a PipeWrite fd).
+pub fn dup_pipe_write(idx: u8) {
+    unsafe {
+        let i = idx as usize;
+        if i < MAX_PIPES && POOL[i].in_use && POOL[i].write_count < 255 {
+            POOL[i].write_count += 1;
+        }
+    }
+}
+
+/// Decrement the read reference count; frees pipe when both counts reach 0.
 pub fn close_pipe_read(idx: u8) {
     unsafe {
         let i = idx as usize;
         if i < MAX_PIPES && POOL[i].in_use {
-            POOL[i].read_open = false;
-            if !POOL[i].write_open { POOL[i].in_use = false; }
+            if POOL[i].read_count > 0 { POOL[i].read_count -= 1; }
+            if POOL[i].read_count == 0 && POOL[i].write_count == 0 {
+                POOL[i].in_use = false;
+            }
         }
     }
 }
 
-/// Close the write end of pipe `idx`.
+/// Decrement the write reference count; frees pipe when both counts reach 0.
 pub fn close_pipe_write(idx: u8) {
     unsafe {
         let i = idx as usize;
         if i < MAX_PIPES && POOL[i].in_use {
-            POOL[i].write_open = false;
-            if !POOL[i].read_open { POOL[i].in_use = false; }
+            if POOL[i].write_count > 0 { POOL[i].write_count -= 1; }
+            if POOL[i].read_count == 0 && POOL[i].write_count == 0 {
+                POOL[i].in_use = false;
+            }
         }
     }
 }
 
-/// Returns true if the write end of the pipe is still open (reader can block).
+/// Returns true if any write end of the pipe is still open (reader can block).
 pub fn pipe_write_open(idx: u8) -> bool {
-    unsafe { idx < MAX_PIPES as u8 && POOL[idx as usize].write_open }
+    unsafe { idx < MAX_PIPES as u8 && POOL[idx as usize].write_count > 0 }
 }
 
-/// Returns true if the read end is still open (writer should not get SIGPIPE yet).
+/// Returns true if any read end is still open (writer should not get SIGPIPE yet).
 pub fn pipe_read_open(idx: u8) -> bool {
-    unsafe { idx < MAX_PIPES as u8 && POOL[idx as usize].read_open }
+    unsafe { idx < MAX_PIPES as u8 && POOL[idx as usize].read_count > 0 }
 }
 
 /// Write `data` into pipe `idx`; returns bytes written (may be partial if full).

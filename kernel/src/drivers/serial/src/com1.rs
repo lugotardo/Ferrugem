@@ -12,8 +12,9 @@ const LSR_TX_EMPTY: u8 = 0x20;
 
 pub fn init() {
     unsafe {
-        port::outb(IER, 0x01); // Enable RX interrupt
-        pic::unmask(4);        // Unmask IRQ4 (COM1)
+        port::outb(COM1 + 2, 0x01); // Enable FIFO, 1-byte trigger, no RX reset (preserves early input)
+        port::outb(IER, 0x01);       // Enable RX interrupt
+        pic::unmask(4);              // Unmask IRQ4 (COM1)
     }
 }
 
