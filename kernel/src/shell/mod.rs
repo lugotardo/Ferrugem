@@ -120,7 +120,7 @@ fn execute(line: &str, s: &mut State) {
         "spawn"  => cmd_spawn(parts.next()),
         "run"    => cmd_run(parts.next()),
         "kill"   => cmd_kill(parts.next()),
-        "halt"   => cmd_halt(),
+        "halt" | "exit" | "poweroff" | "shutdown" => cmd_halt(),
         ""       => {}
         other    => { print_str("unknown command: "); print_str(other); print_str("\n"); }
     }
@@ -162,7 +162,7 @@ fn cmd_help() {
     print_str("  mem                    heap memory usage\n");
     print_str("  ps                     list running processes\n");
     print_str("  clear                  clear the screen\n");
-    print_str("  halt                   halt the system\n");
+    print_str("  halt | exit            halt the system\n");
     print_str("\nProcesses:\n");
     print_str("  spawn <task>           start a kernel task  (hello, counter)\n");
     print_str("  run <path>             load and run an ELF64 binary from VFS\n");
@@ -562,6 +562,12 @@ fn cmd_run(arg: Option<&str>) {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn run_user_hello() {
+    print_str("run: EL0 userspace not implemented yet on aarch64 (Fase 2)\n");
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 fn run_user_hello() {
     #[cfg(target_arch = "x86_64")]
     let prog: &[u8] = &crate::userspace::HELLO_USER;
@@ -573,6 +579,13 @@ fn run_user_hello() {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn run_elf_from_vfs(path: &str) {
+    let _ = path;
+    print_str("run: EL0 userspace not implemented yet on aarch64 (Fase 2)\n");
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 fn run_elf_from_vfs(path: &str) {
     let data = match crate::fs::read_as(path, 0, 0, 0) {
         Some(d) => d,
@@ -582,7 +595,7 @@ fn run_elf_from_vfs(path: &str) {
         print_str("run: not an ELF64 binary: "); print_str(path); print_str("\n");
         return;
     }
-    match crate::scheduler::spawn_elf(data) {
+    match crate::scheduler::spawn_elf(data, path) {
         Some(slot) => {
             print_str("started '"); print_str(path);
             print_str("' → slot "); print_u64(slot as u64);

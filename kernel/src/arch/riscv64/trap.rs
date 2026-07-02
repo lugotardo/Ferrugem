@@ -65,6 +65,8 @@ pub extern "C" fn trap_handler(frame: &mut TrapFrame) {
                     frame.a1 as usize,
                     frame.a2 as usize,
                     frame.a3 as usize,
+                    frame.a4 as usize,
+                    frame.a5 as usize,
                 );
                 frame.a0 = ret as u64;
                 // execve replaces the address space and redirects the return PC/SP

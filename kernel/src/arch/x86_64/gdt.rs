@@ -49,12 +49,16 @@ pub struct Tss {
     pub iomap_base: u16,
 }
 
+// NOTE: user data MUST be at 0x18 and user code at 0x20 so that SYSRETQ
+// works with IA32_STAR[63:48]=0x10:
+//   SS = 0x10+8  | 3 = 0x1B → GDT[0x18] = user data ✓
+//   CS = 0x10+16 | 3 = 0x23 → GDT[0x20] = user code ✓
 static mut GDT: [GdtEntry; 5] = [
     GdtEntry::null(),                             // 0x00 null
     GdtEntry::new(0, 0xFFFFF, 0x9A, 0xA0),       // 0x08 kernel code (64-bit)
     GdtEntry::new(0, 0xFFFFF, 0x92, 0xC0),       // 0x10 kernel data
-    GdtEntry::new(0, 0xFFFFF, 0xFA, 0xA0),       // 0x18 user code (64-bit)
-    GdtEntry::new(0, 0xFFFFF, 0xF2, 0xC0),       // 0x20 user data
+    GdtEntry::new(0, 0xFFFFF, 0xF2, 0xC0),       // 0x18 user data  ← data before code for SYSRET
+    GdtEntry::new(0, 0xFFFFF, 0xFA, 0xA0),       // 0x20 user code (64-bit)
 ];
 
 // Kernel stack for ISR stack switches (4KiB)
@@ -136,11 +140,16 @@ pub fn init() {
 
 pub const KERNEL_CODE_SEL: u16 = 0x08;
 pub const KERNEL_DATA_SEL: u16 = 0x10;
-pub const USER_CODE_SEL: u16 = 0x18 | 3;
-pub const USER_DATA_SEL: u16 = 0x20 | 3;
+pub const USER_CODE_SEL: u16 = 0x20 | 3;  // GDT[4] user code at byte offset 0x20
+pub const USER_DATA_SEL: u16 = 0x18 | 3;  // GDT[3] user data at byte offset 0x18
 
 /// Update TSS.rsp0 the kernel stack the CPU switches to on ring-0 entry.
-/// Call this on every task switch so interrupt frames land on the right stack.
+/// Also updates SYSCALL_KERNEL_RSP so the SYSCALL handler switches to the
+/// correct kernel stack for the current task.
+/// Call this on every task switch.
 pub fn set_rsp0(sp: u64) {
-    unsafe { TSS.rsp0 = sp; }
+    unsafe {
+        TSS.rsp0 = sp;
+        crate::arch::x86_64::idt::SYSCALL_KERNEL_RSP = sp;
+    }
 }

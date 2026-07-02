@@ -6,6 +6,7 @@ const ELFCLASS64: u8      = 2;
 const ELFDATA2LSB: u8     = 1;
 const ET_DYN:     u16     = 3;  // Position-independent executable (PIE)
 const PT_LOAD:    u32     = 1;
+const PT_PHDR:    u32     = 6;
 const PF_X:       u32     = 1;
 const PF_W:       u32     = 2;
 const PF_R:       u32     = 4;
@@ -60,10 +61,11 @@ pub fn is_elf(data: &[u8]) -> bool {
 /// Supports ET_EXEC (absolute VAs must be in the user range) and ET_DYN (PIE):
 /// ET_DYN ELFs are relocated so their lowest PT_LOAD page lands at `USER_BASE_VA`.
 ///
-/// Returns `(entry_va, heap_start_va)` on success where `heap_start_va` is the
-/// first page-aligned VA past the last loaded segment (suitable as initial brk).
+/// Returns `(entry_va, heap_start_va, phdr_va, phnum, phentsize)` on success.
+/// `phdr_va` is the virtual address of the ELF program headers in the process
+/// address space — needed for `AT_PHDR` in the auxiliary vector.
 /// Returns `None` on any error (bad ELF, OOM, VA conflict, out-of-bounds data).
-pub fn load(data: &[u8], pt_phys: u64) -> Option<(usize, usize)> {
+pub fn load(data: &[u8], pt_phys: u64) -> Option<(usize, usize, usize, usize, usize)> {
     if !is_elf(data) { return None; }
 
     let etype     = rd16(data, E_TYPE_OFF);
@@ -93,6 +95,19 @@ pub fn load(data: &[u8], pt_phys: u64) -> Option<(usize, usize)> {
     } else {
         0
     };
+
+    // Compute the program-headers VA for AT_PHDR.
+    // If PT_PHDR segment exists, use its p_vaddr + bias; else fall back to
+    // e_phoff + bias (valid when the first PT_LOAD covers offset 0, which is
+    // the case for all standard PIE / static-musl binaries).
+    let mut phdr_va = (phoff as isize + bias) as usize;
+    for i in 0..phnum {
+        let ph = phoff + i * phentsize;
+        if rd32(data, ph + PH_TYPE_OFF) == PT_PHDR {
+            phdr_va = (rd64(data, ph + PH_VADDR_OFF) as isize + bias) as usize;
+            break;
+        }
+    }
 
     // Map each PT_LOAD segment; track the highest mapped VA for heap_start.
     let mut max_va: usize = 0;
@@ -146,7 +161,7 @@ pub fn load(data: &[u8], pt_phys: u64) -> Option<(usize, usize)> {
     }
 
     let final_entry = (entry as isize + bias) as usize;
-    Some((final_entry, max_va))
+    Some((final_entry, max_va, phdr_va, phnum, phentsize))
 }
 
 fn pf_to_prot(pf: u32) -> u32 {
