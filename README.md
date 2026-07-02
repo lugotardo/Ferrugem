@@ -60,7 +60,7 @@ make iso-virtualbox
 |---|---|
 | x86\_64      | Active     |
 | RISC-V 64    | Active     |
-| ARM64 (AArch64) | Planned |
+| ARM64 (AArch64) | In Development |
 
 ---
 
