@@ -1,4 +1,4 @@
-use super::port;
+use crate::arch::x86_64::port;
 
 // COM1 UART mirror all output to serial for QEMU -serial stdio
 const COM1: u16 = 0x3F8;

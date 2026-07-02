@@ -1,7 +1,12 @@
-/// PL011 UART hardware primitives — QEMU virt board at 0x0900_0000 (aarch64).
-/// Ring buffer and interrupt routing live in arch/aarch64.rs.
+/// PL011 UART hardware primitives, shared by every aarch64 board — only the
+/// base address (and, on Raspberry Pi 3, a GPIO pin-mux step already done
+/// once by `arch::aarch64::console::init` before this runs) differs.
+/// Ring buffer and interrupt routing live in `boards::current::intc`.
 
-const UART_BASE: usize = 0x0900_0000;
+#[cfg(feature = "board-raspberrypi3")]
+const UART_BASE: usize = crate::boards::raspberrypi3::PERIPHERAL_BASE + 0x0020_1000;
+#[cfg(not(feature = "board-raspberrypi3"))]
+const UART_BASE: usize = 0x0900_0000; // QEMU virt board
 
 const UARTDR:   usize = 0x00; // data register (read = RX, write = TX)
 const UARTFR:   usize = 0x18; // flag register

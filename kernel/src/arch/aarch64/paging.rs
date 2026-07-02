@@ -1,39 +1,58 @@
 /// Static identity-mapped page table (aarch64, Fase 1).
 ///
-/// Single-level (L1) table of 1 GiB block descriptors, 39-bit VA space
-/// (T0SZ=25) — the same "coarse identity map, no per-process tables yet"
-/// approach as `riscv64::paging`'s L2 huge-page kernel map. Real
-/// per-process page tables (4 KiB granularity, `map_user_page`, etc.) are
-/// Fase 2 work: nothing in Fase 1 ever spawns an EL0 process, so those
+/// Two-level table, 39-bit VA space (T0SZ=25): L1 holds one table
+/// descriptor per 1 GiB region, each pointing at an L2 table of 2 MiB block
+/// descriptors — the same "coarse identity map, no per-process tables yet"
+/// approach as `riscv64::paging`'s L2 huge-page kernel map, just one level
+/// finer than a single 1 GiB block per region. That extra granularity is
+/// needed because some boards (Raspberry Pi 3) interleave MMIO and RAM
+/// within the same GiB, which one 1 GiB block descriptor can't express.
+/// Real per-process page tables (4 KiB granularity, `map_user_page`, etc.)
+/// are Fase 2 work: nothing in Fase 1 ever spawns an EL0 process, so those
 /// functions are never actually called.
 
-const NUM_BLOCKS: usize = 4; // identity-map the first 4 GiB (low MMIO + RAM)
+use crate::boards::current::{MAPPED_END, MMIO_RANGES};
+
+const NUM_L1: usize = MAPPED_END / (1 << 30); // 1 GiB per L1 entry
 
 #[repr(align(4096))]
 struct L1Table([u64; 512]);
+#[repr(align(4096))]
+struct L2Table([u64; 512]);
 
 static mut L1_TABLE: L1Table = L1Table([0; 512]);
+static mut L2_TABLES: [L2Table; NUM_L1] = [const { L2Table([0; 512]) }; NUM_L1];
 
 const ATTR_DEVICE: u64 = 0; // MAIR index 0: Device-nGnRnE (GIC, UART, ...)
 const ATTR_NORMAL: u64 = 1; // MAIR index 1: Normal, Inner/Outer Write-Back
 
 const BLOCK_AF:       u64 = 1 << 10; // access flag (required: no HW AF management)
 const BLOCK_SH_INNER: u64 = 0b11 << 8;
-const BLOCK_VALID:    u64 = 0b01;    // level-1 block descriptor
+const BLOCK_VALID:    u64 = 0b01;    // level-2 block descriptor
+const TABLE_VALID:    u64 = 0b11;    // level-1 table descriptor
 
-fn block_entry(gib_index: usize, attr_idx: u64) -> u64 {
-    let phys = (gib_index as u64) << 30;
-    phys | BLOCK_AF | BLOCK_SH_INNER | (attr_idx << 2) | BLOCK_VALID
+fn is_device(addr: usize) -> bool {
+    MMIO_RANGES.iter().any(|&(base, size)| addr >= base && addr < base + size)
+}
+
+fn l2_block_entry(addr: usize) -> u64 {
+    let attr_idx = if is_device(addr) { ATTR_DEVICE } else { ATTR_NORMAL };
+    (addr as u64) | BLOCK_AF | BLOCK_SH_INNER | (attr_idx << 2) | BLOCK_VALID
 }
 
 pub fn init() {
     unsafe {
-        // 0x0000_0000-0x3FFF_FFFF: GICv2, PL011, flash, and everything else
-        // QEMU's virt board puts below RAM.
-        L1_TABLE.0[0] = block_entry(0, ATTR_DEVICE);
-        // 0x4000_0000 upward: RAM.
-        for i in 1..NUM_BLOCKS {
-            L1_TABLE.0[i] = block_entry(i, ATTR_NORMAL);
+        // Board-supplied `MMIO_RANGES` decides Device vs Normal per 2 MiB
+        // block; everything in `[0, MAPPED_END)` outside those ranges is
+        // identity-mapped as cacheable RAM.
+        for l1 in 0..NUM_L1 {
+            let l2 = &mut L2_TABLES[l1];
+            for l2i in 0..512 {
+                let addr = (l1 << 30) | (l2i << 21);
+                l2.0[l2i] = l2_block_entry(addr);
+            }
+            let l2_phys = core::ptr::addr_of!(l2.0) as u64;
+            L1_TABLE.0[l1] = l2_phys | TABLE_VALID;
         }
 
         let mair: u64 = (0xFFu64 << 8) | 0x00u64; // idx1=Normal WB, idx0=Device-nGnRnE
@@ -97,7 +116,7 @@ pub fn map_user_page(_pt_phys: u64, _va: usize, _pa: usize, _prot: u32) -> bool 
     unimplemented!("aarch64 fase 2: per-process page tables not implemented yet")
 }
 
-/// No fine-grained (4 KiB) kernel mappings yet — the static 1 GiB identity
+/// No fine-grained (4 KiB) kernel mappings yet — the static 2 MiB identity
 /// map can't unmap a single page. Callers fall back to canary-only guard
 /// protection, exactly as documented on `arch::protect_guard_page`.
 pub fn protect_guard_page(_phys: usize) -> bool {

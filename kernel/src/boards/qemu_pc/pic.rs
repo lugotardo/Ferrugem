@@ -1,6 +1,6 @@
 /// 8259A PIC remapped to vectors 0x20-0x2F to avoid conflicts with CPU exceptions.
 
-use super::port;
+use crate::arch::x86_64::port;
 
 const PIC1_CMD:  u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;

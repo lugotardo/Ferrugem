@@ -1,20 +1,24 @@
-pub mod console;
 pub mod context;
-pub mod fdt;
-pub mod sbi;
 pub mod trap;
-pub mod plic;
 pub mod paging;
 
+// `console`/`sbi`/`plic`/`fdt` are platform (BSP) concerns, not CPU-ISA
+// ones — re-exported here (rather than moved call-by-call) so existing
+// `super::sbi`/`super::plic`/`super::console` references in `trap.rs` keep
+// working unchanged regardless of which riscv64 board is selected.
+pub use crate::boards::current::{console, fdt, plic, sbi};
 pub use fdt::parse_memory_map;
+
+#[cfg(not(feature = "board-qemu-virt-riscv64"))]
+compile_error!("riscv64 build requires the board-qemu-virt-riscv64 feature");
 
 pub fn early_init() {
     trap::init();
-    console::init();
+    crate::boards::current::init();
 }
 
 pub fn interrupts_init() {
-    plic::init();
+    crate::boards::current::interrupts_init();
     unsafe {
         // Enable supervisor-mode global interrupt enable (sstatus.SIE = bit 1)
         core::arch::asm!("csrsi sstatus, 0x2", options(nostack));

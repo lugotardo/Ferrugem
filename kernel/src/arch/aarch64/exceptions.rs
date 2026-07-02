@@ -33,7 +33,7 @@ pub fn init() {
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_irq_handler(_frame: *mut TrapFrame) {
-    super::gic::handle();
+    super::intc::handle();
 }
 
 #[unsafe(no_mangle)]

@@ -20,8 +20,10 @@ pub fn init_from_mmap(mmap: &MemoryMap) {
     let min_base: usize = 0x10_0000;
     #[cfg(target_arch = "riscv64")]
     let min_base: usize = 0x8000_0000;
+    // aarch64 RAM base varies by board (QEMU virt: 0x4000_0000, Raspberry
+    // Pi 3: 0x0), unlike x86_64/riscv64 which only target one board today.
     #[cfg(target_arch = "aarch64")]
-    let min_base: usize = 0x4000_0000;
+    let min_base: usize = crate::boards::current::RAM_BASE;
 
     let region = match mmap.largest_usable(min_base) {
         Some(r) => r,
@@ -51,7 +53,11 @@ fn init_fallback() {
     #[cfg(target_arch = "riscv64")]
     unsafe { MEM_BASE = 0x8000_0000; TOTAL_FRAMES = (128 * 1024 * 1024) / 4096; FREE_FRAMES = TOTAL_FRAMES; }
     #[cfg(target_arch = "aarch64")]
-    unsafe { MEM_BASE = 0x4000_0000; TOTAL_FRAMES = (128 * 1024 * 1024) / 4096; FREE_FRAMES = TOTAL_FRAMES; }
+    unsafe {
+        MEM_BASE     = crate::boards::current::RAM_BASE;
+        TOTAL_FRAMES = crate::boards::current::RAM_FALLBACK_SIZE / 4096;
+        FREE_FRAMES  = TOTAL_FRAMES;
+    }
 }
 
 fn mark_used(frame: usize) {

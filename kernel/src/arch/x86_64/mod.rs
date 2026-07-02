@@ -1,13 +1,20 @@
-pub mod console;
 pub mod context;
 pub mod gdt;
 pub mod idt;
-pub mod multiboot;
-pub mod pic;
 pub mod port;
 pub mod paging;
 
+// `console`/`multiboot`/`pic` are platform (BSP) concerns, not CPU-ISA ones —
+// re-exported here (rather than moved call-by-call) so existing `super::pic`/
+// `super::console` references in `idt.rs` keep working unchanged regardless
+// of which x86_64 board is selected.
+pub use crate::boards::current::{console, multiboot, pic};
 pub use multiboot::parse_memory_map;
+
+#[cfg(not(any(feature = "board-qemu-pc", feature = "board-virtualbox")))]
+compile_error!("x86_64 build requires a board-* feature (board-qemu-pc or board-virtualbox)");
+#[cfg(all(feature = "board-qemu-pc", feature = "board-virtualbox"))]
+compile_error!("select exactly one x86_64 board feature");
 
 pub fn early_init() {
     // Enable SSE/SSE2: clear CR0.EM (bit 2), set CR0.MP (bit 1),
@@ -29,8 +36,7 @@ pub fn early_init() {
     gdt::init();
     idt::init();
     unsafe { setup_syscall(); }
-    pic::init();
-    console::init();
+    crate::boards::current::init();
 }
 
 /// Configure the x86_64 SYSCALL/SYSRETQ mechanism.
@@ -75,9 +81,7 @@ unsafe fn setup_syscall() {
 }
 
 pub fn interrupts_init() {
-    // Unmask timer (IRQ0) and keyboard (IRQ1)
-    pic::unmask(0);
-    pic::unmask(1);
+    crate::boards::current::unmask_default_irqs();
     unsafe { core::arch::asm!("sti") };
 }
 

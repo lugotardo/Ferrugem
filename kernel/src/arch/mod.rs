@@ -437,24 +437,3 @@ pub fn entropy_seed() -> u64 {
         t.wrapping_mul(0x9e3779b97f4a7c15)
     }
 }
-
-// HAL traits implemented per arch
-pub trait Timer {
-    fn init();
-    fn ticks() -> u64;
-}
-
-pub trait InterruptController {
-    fn enable(id: u32);
-    fn disable(id: u32);
-    fn eoi(id: u32);
-}
-
-pub trait Console {
-    fn write_byte(b: u8);
-    fn write_str(s: &str) {
-        for b in s.bytes() {
-            Self::write_byte(b);
-        }
-    }
-}

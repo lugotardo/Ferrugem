@@ -11,10 +11,12 @@
 extern crate alloc;
 
 mod arch;
+mod boards;
 mod drivers;
 mod elf;
 mod version;
 mod fs;
+mod hal;
 mod init;
 mod ipc;
 mod memory;

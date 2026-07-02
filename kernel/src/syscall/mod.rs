@@ -830,7 +830,7 @@ fn sys_getdents64(fd: usize, buf_ptr: *mut u8, count: usize) -> isize {
 
 // ── execve ────────────────────────────────────────────────────────────────────
 
-fn sys_execve(path_ptr: usize, _argv: usize, _envp: usize) -> isize {
+fn sys_execve(path_ptr: usize, argv: usize, envp: usize) -> isize {
     if path_ptr == 0 { return -14; } // EFAULT
     let path = match unsafe { read_path(path_ptr as *const u8) } {
         Some(s) if !s.is_empty() => s,
@@ -845,7 +845,7 @@ fn sys_execve(path_ptr: usize, _argv: usize, _envp: usize) -> isize {
 
     if !crate::elf::is_elf(data) { return -8; } // ENOEXEC
 
-    match crate::scheduler::execve_current(data, path) {
+    match crate::scheduler::execve_current(data, path, argv, envp) {
         Some((ip, sp, pt)) => { set_exec_ctx(ip, sp, pt); 0 }
         None               => -12, // ENOMEM
     }

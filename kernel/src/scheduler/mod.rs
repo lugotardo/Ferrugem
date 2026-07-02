@@ -14,6 +14,19 @@ const STACK_PAGES: usize = 8;
 const STACK_SIZE:  usize = STACK_PAGES * 4096; // 32 KiB per task
 const GUARD_SIZE:  usize = 4096;               // one guard page before each stack
 
+// Initial user stack for a freshly exec'd process: holds argv/envp strings,
+// the argv[]/envp[]/auxv pointer tables, and the actual call stack above that.
+// 32 KiB is generous for typical shell command lines and a handful of env
+// vars; setup_abi_stack() fails cleanly (None) rather than overflow if a
+// caller ever exceeds it.
+const USER_STACK_PAGES: usize = 8;
+const USER_STACK_SIZE:  usize = USER_STACK_PAGES * 4096;
+// Shared cap on both argv[] and envp[] entry counts (independent vectors,
+// same bound) — kept as one constant so the fixed-size staging arrays below
+// have a single source of truth.
+const MAX_EXEC_VEC: usize = 64;
+const MAX_ARG_LEN:  usize = 4096;
+
 const GUARD_CANARY: u64 = 0xDEAD_C0DE_DEAD_C0DE;
 
 static mut TASKS:      [Option<Task>; MAX_TASKS] = [const { None }; MAX_TASKS];
@@ -190,46 +203,105 @@ pub fn spawn_user(prog: &[u8]) -> Option<usize> {
     }
 }
 
-/// Build a System V AMD64 ABI-compliant initial stack frame on `stack_page_phys`.
+/// Read a NUL-terminated string from a raw user-space pointer, bounded to
+/// `max_len` bytes. The pointer is valid because the caller's page table is
+/// still the active one (execve hasn't switched CR3 yet). Returns `None` if
+/// `ptr` is null or the string exceeds `max_len`.
+unsafe fn user_cstr<'a>(ptr: *const u8, max_len: usize) -> Option<&'a [u8]> {
+    if ptr.is_null() { return None; }
+    let mut len = 0usize;
+    while len < max_len {
+        if *ptr.add(len) == 0 { return Some(core::slice::from_raw_parts(ptr, len)); }
+        len += 1;
+    }
+    None // unterminated within bound — treat as malformed
+}
+
+/// Read a NUL-terminated array of `*const u8` from user space (an argv/envp
+/// vector), bounded to `max_count` entries. Returns the entries as byte-string
+/// slices, still pointing into the caller's (pre-exec) address space.
+unsafe fn user_cstr_array<'a>(ptr: usize, max_count: usize, out: &mut [&'a [u8]; MAX_EXEC_VEC]) -> usize {
+    if ptr == 0 { return 0; }
+    let ptrs = ptr as *const usize;
+    let mut n = 0usize;
+    while n < max_count {
+        let entry = *ptrs.add(n);
+        if entry == 0 { break; }
+        let Some(s) = user_cstr(entry as *const u8, MAX_ARG_LEN) else { break };
+        out[n] = s;
+        n += 1;
+    }
+    n
+}
+
+/// Build a System V AMD64 ABI-compliant initial stack frame on the
+/// `region_size`-byte physical region `region_phys` (mapped contiguously at
+/// virtual addresses `[stack_top_va - region_size, stack_top_va)`).
 ///
-/// Memory layout (high to low within the 4 KiB page):
-///   [top-24]: 16-byte AT_RANDOM seed + 8-byte padding
-///   [top-32]: NUL-terminated argv[0] string, 8-byte padded
-///   [rsp..]:  argc, argv[0] ptr, NULL, NULL (envp), auxv pairs, AT_NULL
+/// Memory layout (high to low within the region):
+///   AT_RANDOM seed, then argv[]/envp[] strings, then the argc/argv/envp/auxv
+///   table itself, all 8/16-byte aligned as required.
 ///
-/// `stack_top_va` is the first byte ABOVE the stack page (= USER_ELF_STACK_TOP).
-/// Returns the virtual address of argc (the new user RSP).
+/// `argv`/`envp` are the real argument/environment vectors read from the
+/// calling process (still mapped, since CR3 hasn't switched yet); pass empty
+/// slices to fall back to a synthetic single-element argv of `argv0` (used
+/// when spawning the initial init process, which has no caller to inherit
+/// argv/envp from).
+///
+/// Returns the virtual address of argc (the new user RSP), or `None` if the
+/// strings and tables don't fit in `region_size`.
 unsafe fn setup_abi_stack(
-    stack_page_phys: usize,
+    region_phys: usize,
+    region_size: usize,
     stack_top_va: usize,
     argv0: &str,
+    argv: &[&[u8]],
+    envp: &[&[u8]],
     phdr_va: usize,
     phnum: usize,
     phentsize: usize,
-) -> usize {
-    let page_va   = stack_top_va - 4096;
-    let phys_base = stack_page_phys;
+) -> Option<usize> {
+    let region_va = stack_top_va - region_size;
 
-    // Helper: write u64 into the physical page at a given byte offset from page start.
-    let w64 = |off: usize, val: u64| { *((phys_base + off) as *mut u64) = val; };
+    // Helper: write u64 into the physical region at a given byte offset from its base.
+    let w64 = |off: usize, val: u64| { *((region_phys + off) as *mut u64) = val; };
 
-    // ── String area: write from page top downward ────────────────────────────
+    let synthetic = [argv0.as_bytes()];
+    let argv: &[&[u8]] = if argv.is_empty() { &synthetic } else { argv };
 
-    // 16-byte AT_RANDOM seed at the very top of the page.
-    let rand_off = 4096 - 16;
-    let rand_va  = page_va + rand_off;
-    // Fill with pseudo-random data from hardware entropy.
+    // ── String area: write from the top of the region downward ──────────────
+
+    // 16-byte AT_RANDOM seed at the very top of the region.
+    let rand_off = region_size - 16;
+    let rand_va  = region_va + rand_off;
     let seed = crate::arch::entropy_seed();
     w64(rand_off,     seed);
     w64(rand_off + 8, seed ^ 0xDEAD_BEEF_CAFE_1234);
 
-    // argv[0] string, 8-byte aligned, below AT_RANDOM.
-    let name     = argv0.as_bytes();
-    let str_off  = (rand_off - name.len() - 1) & !7;
-    let str_va   = page_va + str_off;
-    let dst = (phys_base + str_off) as *mut u8;
-    core::ptr::copy_nonoverlapping(name.as_ptr(), dst, name.len());
-    *dst.add(name.len()) = 0; // NUL
+    // argv[] and envp[] strings, each NUL-terminated and 8-byte aligned,
+    // packed downward from just below AT_RANDOM. Track each string's VA so
+    // the pointer table below can reference it.
+    let mut argv_va = [0u64; MAX_EXEC_VEC];
+    let mut envp_va = [0u64; MAX_EXEC_VEC];
+    let mut off = rand_off;
+
+    for (s, dst_va) in argv.iter().zip(argv_va.iter_mut()).take(argv.len().min(MAX_EXEC_VEC)) {
+        off = (off.checked_sub(s.len() + 1)?) & !7;
+        let dst = (region_phys + off) as *mut u8;
+        core::ptr::copy_nonoverlapping(s.as_ptr(), dst, s.len());
+        *dst.add(s.len()) = 0;
+        *dst_va = (region_va + off) as u64;
+    }
+    for (s, dst_va) in envp.iter().zip(envp_va.iter_mut()).take(envp.len().min(MAX_EXEC_VEC)) {
+        off = (off.checked_sub(s.len() + 1)?) & !7;
+        let dst = (region_phys + off) as *mut u8;
+        core::ptr::copy_nonoverlapping(s.as_ptr(), dst, s.len());
+        *dst.add(s.len()) = 0;
+        *dst_va = (region_va + off) as u64;
+    }
+
+    let argc = argv.len().min(MAX_EXEC_VEC);
+    let envc = envp.len().min(MAX_EXEC_VEC);
 
     // ── ABI table: argc / argv[] / NULL / envp[] / NULL / auxv[] ────────────
     // auxv entries we provide (type, value pairs, 8 bytes each):
@@ -245,17 +317,17 @@ unsafe fn setup_abi_stack(
     //   AT_RANDOM (25), &rand_bytes
     //   AT_NULL   (0),  0
     // = 11 pairs × 16 bytes = 176 bytes
-    // + argc(8) + argv[0](8) + NULL(8) + NULL(8) = 32 bytes
-    // Total = 208 bytes from rsp (round up to 224 for alignment).
-    let table_size = 224usize;
-    let rsp_off = (str_off - table_size) & !15; // 16-byte align
-    let rsp_va  = page_va + rsp_off;
+    // + argc(8) + argv[0..argc](8 each) + NULL(8) + envp[0..envc](8 each) + NULL(8)
+    let table_size = 8 + (argc + 1) * 8 + (envc + 1) * 8 + 176;
+    let rsp_off = off.checked_sub(table_size)? & !15; // 16-byte align
+    let rsp_va  = region_va + rsp_off;
 
     let mut o = rsp_off;
-    w64(o,      1);                 o += 8; // argc = 1
-    w64(o, str_va as u64);         o += 8; // argv[0] ptr
-    w64(o,      0);                 o += 8; // argv[1] = NULL
-    w64(o,      0);                 o += 8; // envp[0] = NULL
+    w64(o, argc as u64); o += 8;
+    for i in 0..argc { w64(o, argv_va[i]); o += 8; }
+    w64(o, 0); o += 8; // argv[argc] = NULL
+    for i in 0..envc { w64(o, envp_va[i]); o += 8; }
+    w64(o, 0); o += 8; // envp[envc] = NULL
     // auxv
     w64(o,      3);                 o += 8; // AT_PHDR
     w64(o, phdr_va as u64);         o += 8;
@@ -281,7 +353,27 @@ unsafe fn setup_abi_stack(
     w64(o,      0);                 // = 0
     let _ = o;
 
-    rsp_va
+    Some(rsp_va)
+}
+
+/// Allocate and map the contiguous `USER_STACK_PAGES` physical region used for
+/// a fresh process's initial stack (argv/envp/auxv + call stack above it).
+/// Returns the region's physical base address.
+unsafe fn map_user_init_stack(pt_phys: u64, stack_top: usize) -> Option<usize> {
+    let phys = crate::memory::alloc_pages(USER_STACK_PAGES)?;
+    core::ptr::write_bytes(phys as *mut u8, 0, USER_STACK_SIZE);
+    let region_va = stack_top - USER_STACK_SIZE;
+    for i in 0..USER_STACK_PAGES {
+        let va = region_va + i * 4096;
+        let page_phys = phys + i * 4096;
+        if !crate::arch::map_user_page(
+            pt_phys, va, page_phys,
+            crate::arch::PROT_READ | crate::arch::PROT_WRITE | crate::arch::PROT_USER,
+        ) {
+            return None;
+        }
+    }
+    Some(phys)
 }
 
 /// Spawn a user task by loading an ELF64 binary into a fresh address space.
@@ -304,22 +396,16 @@ pub fn spawn_elf(data: &[u8], argv0: &str) -> Option<usize> {
         // Parse and map ELF segments into pt_phys
         let (entry, heap_start, phdr_va, phnum, phentsize) = crate::elf::load(data, pt_phys)?;
 
-        // Allocate and map one user stack page.
+        // Allocate and map the initial user stack region.
         // Use USER_ELF_STACK_TOP which is 256 MiB above USER_BASE_VA — well
         // above any binary's BSS so there is no overlap with PT_LOAD segments.
-        let stack_top      = crate::arch::USER_ELF_STACK_TOP;
-        let ustack_phys    = crate::memory::alloc_pages(1)?;
-        let ustack_page_va = stack_top - 4096;
-        core::ptr::write_bytes(ustack_phys as *mut u8, 0, 4096);
-        if !crate::arch::map_user_page(
-            pt_phys, ustack_page_va, ustack_phys,
-            crate::arch::PROT_READ | crate::arch::PROT_WRITE | crate::arch::PROT_USER,
-        ) {
-            return None;
-        }
+        let stack_top   = crate::arch::USER_ELF_STACK_TOP;
+        let ustack_phys = map_user_init_stack(pt_phys, stack_top)?;
 
         let user_rip = entry as u64;
-        let user_rsp = setup_abi_stack(ustack_phys, stack_top, argv0, phdr_va, phnum, phentsize) as u64;
+        let user_rsp = setup_abi_stack(
+            ustack_phys, USER_STACK_SIZE, stack_top, argv0, &[], &[], phdr_va, phnum, phentsize,
+        )? as u64;
 
         let kstack    = core::slice::from_raw_parts_mut(kstack_phys as *mut u8, STACK_SIZE);
         let kernel_sp = crate::arch::task_init_userspace_stack(kstack, user_rip, user_rsp);
@@ -411,25 +497,29 @@ pub fn spawn_fork(user_ip: u64, user_sp: u64, regs: [u64; 6], callee_saved: [u64
 }
 
 /// Replace the current task's address space in-place with a fresh ELF binary.
+/// `argv_ptr`/`envp_ptr` are the raw argv[]/envp[] vectors passed to execve(2),
+/// still pointing into the CALLER's (pre-exec) address space — read them
+/// before touching the new page table below, since both are only valid until
+/// the CR3 switch the trap handler performs after this function returns.
 /// Returns (new_entry, new_stack_top, new_pt_phys) on success.
 /// The caller (trap handler) must redirect sepc/rip and switch address space.
-pub fn execve_current(data: &[u8], argv0: &str) -> Option<(u64, u64, u64)> {
+pub fn execve_current(data: &[u8], argv0: &str, argv_ptr: usize, envp_ptr: usize) -> Option<(u64, u64, u64)> {
     unsafe {
+        let mut argv_buf: [&[u8]; MAX_EXEC_VEC] = [&[]; MAX_EXEC_VEC];
+        let mut envp_buf: [&[u8]; MAX_EXEC_VEC] = [&[]; MAX_EXEC_VEC];
+        let argc = user_cstr_array(argv_ptr, MAX_EXEC_VEC, &mut argv_buf);
+        let envc = user_cstr_array(envp_ptr, MAX_EXEC_VEC, &mut envp_buf);
+
         let new_pt = crate::arch::create_empty_process_page_table()?;
         let (entry, heap_start, phdr_va, phnum, phentsize) = crate::elf::load(data, new_pt)?;
 
-        let stack_top      = crate::arch::USER_ELF_STACK_TOP;
-        let ustack_phys    = crate::memory::alloc_pages(1)?;
-        let ustack_page_va = stack_top - 4096;
-        core::ptr::write_bytes(ustack_phys as *mut u8, 0, 4096);
-        if !crate::arch::map_user_page(
-            new_pt, ustack_page_va, ustack_phys,
-            crate::arch::PROT_READ | crate::arch::PROT_WRITE | crate::arch::PROT_USER,
-        ) {
-            return None;
-        }
+        let stack_top   = crate::arch::USER_ELF_STACK_TOP;
+        let ustack_phys = map_user_init_stack(new_pt, stack_top)?;
 
-        let user_rsp = setup_abi_stack(ustack_phys, stack_top, argv0, phdr_va, phnum, phentsize);
+        let user_rsp = setup_abi_stack(
+            ustack_phys, USER_STACK_SIZE, stack_top, argv0,
+            &argv_buf[..argc], &envp_buf[..envc], phdr_va, phnum, phentsize,
+        )?;
 
         let task = TASKS[CURRENT].as_mut()?;
         // Old page table and its mapped frames are leaked — a page-table walker is

@@ -2,8 +2,22 @@ pub mod boot;
 pub mod console;
 pub mod context;
 pub mod exceptions;
-pub mod gic;
 pub mod paging;
+
+// `intc` and `parse_memory_map` are platform (BSP) concerns, not CPU-ISA
+// ones — re-exported here (rather than moved call-by-call) so the existing
+// `super::intc::handle()` reference in `exceptions.rs` keeps working
+// unchanged regardless of which aarch64 board is selected. Every board
+// exposes its interrupt controller as `intc` (QEMU virt's is a real GICv2,
+// re-exported from its own `gic` module under that name; the Raspberry Pi
+// 3 has no GIC at all, so `intc` is the only accurate cross-board name).
+pub use crate::boards::current::intc;
+pub use crate::boards::current::parse_memory_map;
+
+#[cfg(not(any(feature = "board-qemu-virt-aarch64", feature = "board-raspberrypi3")))]
+compile_error!("aarch64 build requires a board-* feature (board-qemu-virt-aarch64 or board-raspberrypi3)");
+#[cfg(all(feature = "board-qemu-virt-aarch64", feature = "board-raspberrypi3"))]
+compile_error!("select exactly one aarch64 board feature");
 
 /// Reserved for Fase 2 (EL0 userspace) — not a real per-process VA layout
 /// yet, defined only so `arch::mod.rs`'s cross-arch consts stay symmetric.
@@ -18,7 +32,7 @@ pub fn early_init() {
 }
 
 pub fn interrupts_init() {
-    gic::init();
+    intc::init();
     unsafe {
         core::arch::asm!("msr daifclr, #2", options(nostack)); // unmask IRQs
     }
@@ -56,14 +70,4 @@ pub fn halt() -> ! {
     loop {
         unsafe { core::arch::asm!("wfi", options(nostack)) };
     }
-}
-
-/// Fase 1 hardcodes the QEMU virt default (128 MiB at 0x4000_0000) instead
-/// of parsing the DTB `boot::aarch64_fdt_ptr` stashed at boot — real FDT
-/// parsing (same approach as `riscv64::fdt`) is Fase 2 work.
-pub fn parse_memory_map() -> crate::memory::mmap::MemoryMap {
-    use crate::memory::mmap::{MemoryMap, RegionKind};
-    let mut map = MemoryMap::empty();
-    map.add(0x4000_0000, 128 * 1024 * 1024, RegionKind::Usable);
-    map
 }

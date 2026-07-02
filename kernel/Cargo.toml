@@ -12,8 +12,21 @@ bench   = false
 [dependencies]
 
 [features]
-default = []
+default = [
+    "board-qemu-pc",
+    "board-qemu-virt-riscv64",
+    "board-qemu-virt-aarch64",
+]
 net = []
+
+# Board selection (one per ISA; target_arch already gates which one actually
+# compiles, so the inactive-ISA defaults above are inert). To build a
+# non-default board: `--no-default-features --features board-<name>`.
+board-qemu-pc            = [] # x86_64: QEMU q35
+board-virtualbox         = [] # x86_64: GRUB ISO / VirtualBox
+board-qemu-virt-riscv64  = [] # riscv64: QEMU `virt`
+board-qemu-virt-aarch64  = [] # aarch64: QEMU `virt`
+board-raspberrypi3       = [] # aarch64: Raspberry Pi 3 (BCM2837)
 
 [package.metadata.bootimage]
 test-args = [

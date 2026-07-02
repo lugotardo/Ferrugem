@@ -37,30 +37,39 @@ git clone https://github.com/lugotardo/Ferrugem
 cd Ferrugem
 
 # Build and run (headless, serial via terminal)
-make x86          # x86_64
-make riscv        # RISC-V
+make x86          # x86_64, QEMU q35
+make riscv        # RISC-V, QEMU virt
+make aarch64      # aarch64, QEMU virt
+make raspberrypi3 # aarch64, Raspberry Pi 3 (BCM2837) via QEMU's raspi3b machine
 
-# Build and run with a VGA display window
+# Build and run with a VGA display window (x86_64 only)
 make x86-display
 
 # Build only
 make build
 
-# Generate an ISO for VirtualBox / real hardware
-make iso-virtualbox
+# Generate an ISO for VirtualBox
+make virtualbox
 ```
 
 > **Tip:** `make x86` connects serial I/O directly to your terminal. `make x86-display` opens a VGA window; keyboard input still works from the terminal via TCP.
 
 ---
 
-## Supported Architectures
+## Supported Architectures & Boards
 
-| Architecture | Status     |
-|---|---|
-| x86\_64      | Active     |
-| RISC-V 64    | Active     |
-| ARM64 (AArch64) | In Development |
+The kernel (`kernel/src/arch/`) only contains CPU-generic code; everything
+specific to one platform — boot glue, linker script, peripheral addresses,
+interrupt routing, memory map — lives in a Board Support Package under
+`kernel/src/boards/`, selected at compile time by a `board-*` Cargo feature
+(see `Makefile`'s `BOARD=` variable). Adding a new board means adding a new
+BSP, not touching the generic kernel.
+
+| Architecture | Status | Boards |
+|---|---|---|
+| x86\_64 | Active | `qemu-pc` (QEMU q35, default), `virtualbox` |
+| RISC-V 64 | Active | `qemu-virt` (default) |
+| ARM64 (AArch64) | Active | `qemu-virt` (default), `raspberrypi3` (BCM2837, tested via QEMU's `raspi3b` machine) |
 
 ---
 
