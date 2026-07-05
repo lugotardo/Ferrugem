@@ -1,4 +1,4 @@
-/// Minimal PL011 UART console for early boot/panic output — reachable even
+/// Minimal PL011 UART console for early boot/panic output, reachable even
 /// before `drivers::serial::init()` runs, mirroring x86_64's direct COM1
 /// access in `arch::x86_64::console`. The interrupt-driven runtime driver
 /// lives in `drivers::serial::src::pl011` and duplicates these register
@@ -21,7 +21,7 @@ pub fn init() {
     // QEMU's PL011 model comes up already configured (115200 8N1) when
     // booted directly via -kernel; nothing to do here. Real Raspberry Pi 3
     // hardware (and QEMU's raspi3b model) additionally needs GPIO14/15
-    // routed to UART0 before these registers do anything — see
+    // routed to UART0 before these registers do anything, see
     // `boards::raspberrypi3::gpio`.
     #[cfg(feature = "board-raspberrypi3")]
     crate::boards::raspberrypi3::gpio::init_uart_pins();
@@ -38,4 +38,10 @@ pub fn print_byte(b: u8) {
         while reg(UARTFR).read_volatile() & UARTFR_TXFF != 0 {}
         reg(UARTDR).write_volatile(b as u32);
     }
+    // Mirror onto the HDMI framebuffer console, if `boards::raspberrypi3::
+    // framebuffer::init` (called later, from `arch::board_late_init` once
+    // paging is up) ever managed to get one from firmware. A no-op until
+    // then, and forever on QEMU virt / no display attached.
+    #[cfg(feature = "board-raspberrypi3")]
+    crate::boards::raspberrypi3::fbconsole::put_byte(b);
 }

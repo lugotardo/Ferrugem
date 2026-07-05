@@ -1,9 +1,9 @@
 //! BSP: x86_64 PC-compatible platform, VirtualBox (booted from the GRUB ISO
 //! built by `make virtualbox` / `make iso-virtualbox`).
 //!
-//! Identical to `boards::qemu_pc` today — VirtualBox and QEMU's `q35`
+//! Identical to `boards::qemu_pc` today, VirtualBox and QEMU's `q35`
 //! machine are both plain IBM-PC-compatible (Multiboot boot, VGA+COM1,
-//! 8259 PIC, e820 memory map) — but kept as an independent BSP so the two
+//! 8259 PIC, e820 memory map), but kept as an independent BSP so the two
 //! can diverge later (e.g. ACPI quirks, VirtualBox-specific devices)
 //! without having to split a shared module apart first.
 

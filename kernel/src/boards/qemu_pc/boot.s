@@ -29,7 +29,7 @@
 .code32
 .align 8
 
-/* Multiboot2 header — must be within first 32 KiB of the file.
+/* Multiboot2 header, must be within first 32 KiB of the file.
  * Placed at the very start of .text.boot. */
 mb2_header_start:
     .long MB2_MAGIC

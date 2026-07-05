@@ -118,7 +118,7 @@ pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize
         SYS_SIGALTSTACK   => sys_sigaltstack(a0, a1),
         SYS_GETTID        => sys_getpid(), // single-threaded: TID == PID
         SYS_TKILL         => sys_kill(a0, a1),
-        SYS_TGKILL        => sys_kill(a1, a2), // tgkill(tgid, tid, sig) — tid==PID
+        SYS_TGKILL        => sys_kill(a1, a2), // tgkill(tgid, tid, sig), tid==PID
         SYS_FUTEX         => sys_futex(a0, a1, a2),
         SYS_SET_TID_ADDRESS => sys_getpid(), // record tidptr, return TID
         SYS_SET_ROBUST_LIST => 0,  // stub
@@ -126,7 +126,7 @@ pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize
         SYS_GETRANDOM     => sys_getrandom(a0 as *mut u8, a1, a2),
         SYS_OPENAT        => sys_openat(a0 as i64, a1 as *const u8, a2, a3),
         SYS_NEWFSTATAT    => sys_newfstatat(a0 as i64, a1 as *const u8, a2 as *mut Stat, a3),
-        SYS_READLINKAT    => -22, // EINVAL — no symlinks yet
+        SYS_READLINKAT    => -22, // EINVAL, no symlinks yet
         SYS_RENAMEAT      => -38, // ENOSYS
         SYS_UNLINKAT      => sys_unlinkat(a0 as i64, a1 as *const u8, a2),
         SYS_MKDIRAT       => sys_mkdirat(a0 as i64, a1 as *const u8, a2),
@@ -142,9 +142,9 @@ pub fn dispatch(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize
         SYS_IOCTL         => sys_ioctl(a0, a1, a2),
         SYS_PIPE          => sys_pipe(a0 as *mut i32),
         SYS_PIPE2         => sys_pipe(a0 as *mut i32), // flags (O_CLOEXEC etc.) ignored for now
-        SYS_SOCKETPAIR    => sys_socketpair(a3 as *mut i32), // domain/type/protocol ignored — only AF_UNIX use case supported
-        SYS_SENDTO        => sys_write(a0, a1 as *const u8, a2), // dest_addr/flags ignored — connected AF_UNIX socketpair only
-        SYS_RECVFROM      => sys_read(a0, a1 as *mut u8, a2),  // src_addr/flags ignored — connected AF_UNIX socketpair only
+        SYS_SOCKETPAIR    => sys_socketpair(a3 as *mut i32), // domain/type/protocol ignored, only AF_UNIX use case supported
+        SYS_SENDTO        => sys_write(a0, a1 as *const u8, a2), // dest_addr/flags ignored, connected AF_UNIX socketpair only
+        SYS_RECVFROM      => sys_read(a0, a1 as *mut u8, a2),  // src_addr/flags ignored, connected AF_UNIX socketpair only
         SYS_YIELD         => sys_yield(),
         SYS_DUP           => sys_dup(a0),
         SYS_DUP2          => sys_dup2(a0, a1),
@@ -187,7 +187,7 @@ unsafe fn read_path<'a>(ptr: *const u8) -> Option<&'a str> {
 ///
 /// The kernel doesn't implement a full TTY line discipline, but without any
 /// echo at all, typed input is completely invisible on both the serial
-/// terminal and the VGA console — userspace programs (like the shell) just
+/// terminal and the VGA console, userspace programs (like the shell) just
 /// read raw bytes and never see them reflected back.
 fn echo_stdin_byte(b: u8) {
     match b {
@@ -216,18 +216,16 @@ fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
                     // the Enter key, not '\n'. Userspace line readers (Rust's
                     // BufRead::read_line, musl's getline) only treat '\n' as a
                     // line terminator, so without this translation Enter never
-                    // completes a line — it just silently hangs forever.
+                    // completes a line, it just silently hangs forever.
                     let b = if b == b'\r' { b'\n' } else { b };
                     unsafe { *buf = b };
                     return 1;
                 }
-                if let Some(sc) = crate::drivers::keyboard::read_scancode() {
-                    if let Some(c) = crate::drivers::keyboard::scancode_to_ascii(sc) {
-                        echo_stdin_byte(c);
-                        let c = if c == b'\r' { b'\n' } else { c };
-                        unsafe { *buf = c };
-                        return 1;
-                    }
+                if let Some(c) = crate::drivers::keyboard::read_byte() {
+                    echo_stdin_byte(c);
+                    let c = if c == b'\r' { b'\n' } else { c };
+                    unsafe { *buf = c };
+                    return 1;
                 }
                 crate::scheduler::block_on_tty();
             }
@@ -632,7 +630,7 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
         Some(_) => return -25, // ENOTTY
     }
     match cmd {
-        TCGETS => -25, // ENOTTY — no full termios
+        TCGETS => -25, // ENOTTY, no full termios
         TIOCGWINSZ => {
             if arg == 0 { return -14; } // EFAULT
             // struct winsize: ws_row, ws_col, ws_xpixel, ws_ypixel (4 × u16)
@@ -650,9 +648,9 @@ fn sys_fcntl(fd: usize, cmd: usize, _arg: usize) -> isize {
     if crate::scheduler::current_fd_get(fd).is_none() { return -9; } // EBADF
     match cmd {
         0 => sys_dup(fd), // F_DUPFD
-        1 => 0,           // F_GETFD  — no FD_CLOEXEC yet
+        1 => 0,           // F_GETFD , no FD_CLOEXEC yet
         2 => 0,           // F_SETFD
-        3 => 0o2,         // F_GETFL  — return O_RDWR stub
+        3 => 0o2,         // F_GETFL , return O_RDWR stub
         4 => 0,           // F_SETFL
         _ => -22,         // EINVAL
     }
@@ -1062,7 +1060,7 @@ fn sys_clone(flags: usize, child_stack: usize) -> isize {
     // Threads not supported: if CLONE_THREAD is set, we'd need shared VM which we don't have.
     if flags & CLONE_THREAD != 0 { return -38; }
     // musl's posix_spawn calls clone(CLONE_VM|CLONE_VFORK, child_stack, ...) with a small,
-    // dedicated child_stack (not the caller's normal stack) — its userspace __clone trampoline
+    // dedicated child_stack (not the caller's normal stack), its userspace __clone trampoline
     // resumes from that stack expecting to pop a function pointer + arg pushed there. Even
     // though we deep-copy the page table instead of sharing it, the child must still resume
     // with that exact stack pointer, or it ends up executing __clone's trampoline against the
@@ -1114,7 +1112,7 @@ fn sys_lseek(fd: usize, offset: i64, whence: usize) -> isize {
 // ── openat / fstatat / unlinkat / mkdirat ────────────────────────────────────
 //
 // The `*at` variants take a dirfd as first argument.
-// AT_FDCWD (-100) means "use cwd" — same as the plain syscall.
+// AT_FDCWD (-100) means "use cwd", same as the plain syscall.
 // We don't support real dirfd-relative resolution yet: if dirfd != AT_FDCWD
 // and the path is relative, we fall back to cwd (acceptable for now).
 
@@ -1321,7 +1319,7 @@ fn sys_arch_prctl(code: usize, addr: usize) -> isize {
             unsafe { *(addr as *mut u64) = val; }
             0
         }
-        ARCH_SET_GS | ARCH_GET_GS => -22, // EINVAL — GS.base not exposed
+        ARCH_SET_GS | ARCH_GET_GS => -22, // EINVAL, GS.base not exposed
         _ => -22,
     }
 }

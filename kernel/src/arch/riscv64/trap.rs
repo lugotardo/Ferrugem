@@ -89,13 +89,13 @@ pub extern "C" fn trap_handler(frame: &mut TrapFrame) {
                 // sstatus.SPP (bit 8): 0 = fault from U-mode, 1 = from S-mode
                 let from_user = (frame.sstatus >> 8) & 1 == 0;
                 if from_user && crate::scheduler::handle_user_page_fault(stval) {
-                    // Mapped successfully — sepc unchanged, faulting instruction retries
+                    // Mapped successfully, sepc unchanged, faulting instruction retries
                 } else if from_user {
                     // Unresolvable user fault (invalid address or OOM) → SIGSEGV
                     crate::scheduler::exit_current(139); // 128 + SIGSEGV(11)
                     loop { unsafe { core::arch::asm!("wfi", options(nostack)) } }
                 } else {
-                    // Kernel page fault — panic
+                    // Kernel page fault, panic
                     super::console::print_str("[TRAP] kernel page fault sepc=0x");
                     let val = frame.sepc;
                     let mut buf = [b'0'; 16];

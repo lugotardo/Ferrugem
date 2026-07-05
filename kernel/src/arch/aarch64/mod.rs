@@ -5,7 +5,7 @@ pub mod exceptions;
 pub mod paging;
 
 // `intc` and `parse_memory_map` are platform (BSP) concerns, not CPU-ISA
-// ones — re-exported here (rather than moved call-by-call) so the existing
+// ones, re-exported here (rather than moved call-by-call) so the existing
 // `super::intc::handle()` reference in `exceptions.rs` keeps working
 // unchanged regardless of which aarch64 board is selected. Every board
 // exposes its interrupt controller as `intc` (QEMU virt's is a real GICv2,
@@ -19,7 +19,7 @@ compile_error!("aarch64 build requires a board-* feature (board-qemu-virt-aarch6
 #[cfg(all(feature = "board-qemu-virt-aarch64", feature = "board-raspberrypi3"))]
 compile_error!("select exactly one aarch64 board feature");
 
-/// Reserved for Fase 2 (EL0 userspace) — not a real per-process VA layout
+/// Reserved for Fase 2 (EL0 userspace), not a real per-process VA layout
 /// yet, defined only so `arch::mod.rs`'s cross-arch consts stay symmetric.
 pub const USER_BASE_VA: usize = 0x40_0000_0000;
 pub const USER_CODE_VA: usize = USER_BASE_VA;

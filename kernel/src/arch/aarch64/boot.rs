@@ -1,7 +1,7 @@
 //! aarch64 boot entry point.
 //!
 //! Unlike x86_64/riscv64, this is NOT assembled by `build.rs` from a
-//! separate `boot.s` — there is no `aarch64-*-as`/`clang` cross-assembler
+//! separate `boot.s`, there is no `aarch64-*-as`/`clang` cross-assembler
 //! available in every dev environment. `global_asm!` is compiled by
 //! rustc's own LLVM backend (which already targets `aarch64-unknown-none`
 //! natively), so the boot stub has no external toolchain dependency.
@@ -10,17 +10,17 @@
 //!   x0 = pointer to the device tree blob (DTB)
 //!   x1-x3 = 0
 //! at whatever EL the board defaults to. QEMU virt starts at EL2 (with
-//! `virtualization=on`) or EL1; QEMU's `raspi3b` machine — unlike real
+//! `virtualization=on`) or EL1; QEMU's `raspi3b` machine, unlike real
 //! Raspberry Pi 3 firmware, which drops to EL2 before jumping to the
-//! kernel — resets the CPU straight into EL3. We defensively drop from
+//! kernel, resets the CPU straight into EL3. We defensively drop from
 //! whichever of EL3/EL2 we're handed down to EL1 since this kernel never
 //! uses TrustZone or virtualization.
 //!
 //! Unlike QEMU virt's default `-kernel` boot (one vCPU unless `-smp` is
-//! given), real Raspberry Pi 3 firmware — and QEMU's `raspi3b` machine,
-//! which models it — releases all 4 cores at this same entry point
+//! given), real Raspberry Pi 3 firmware, and QEMU's `raspi3b` machine,
+//! which models it, releases all 4 cores at this same entry point
 //! simultaneously. Only core 0 may proceed past the check below; the rest
-//! park in `wfe` forever (no SMP support yet — see `scheduler`), since
+//! park in `wfe` forever (no SMP support yet, see `scheduler`), since
 //! letting every core race through `.bss` zeroing and into `kernel_main`
 //! would corrupt shared kernel state.
 
@@ -65,14 +65,14 @@ core::arch::global_asm!(
     "    msr  elr_el2, x0",
     "    eret",
 
-    // ── EL3 -> EL1 drop (skips EL2 entirely — architecturally valid; we
+    // ── EL3 -> EL1 drop (skips EL2 entirely, architecturally valid; we
     // never run a hypervisor, so there's nothing EL2 needs to do) ─────────
     "5:",
     "    mov  x0, #0x401",              // SCR_EL3: NS=1, RW=1 (lower ELs AArch64)
     "    msr  scr_el3, x0",
 
     // SCR_EL3.NS=1 puts us in the "non-secure EL2 present" case, where
-    // HCR_EL2.RW (not SCR_EL3.RW) selects EL1's execution state — same
+    // HCR_EL2.RW (not SCR_EL3.RW) selects EL1's execution state, same
     // bit the EL2->EL1 path above sets, needed here too.
     "    mov  x0, #1",
     "    lsl  x0, x0, #31",

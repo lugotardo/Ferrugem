@@ -20,7 +20,7 @@ fn main() {
 /// Directory holding the active board's boot glue + linker script.
 ///
 /// `.cargo/config.toml` rustflags are keyed by target triple only, so they
-/// can't vary by Cargo feature — board selection (`board-*` features, see
+/// can't vary by Cargo feature, board selection (`board-*` features, see
 /// `kernel/Cargo.toml`) has to be resolved here instead. Cargo exposes each
 /// enabled feature to build scripts as `CARGO_FEATURE_<NAME>` (uppercased,
 /// dashes -> underscores).
@@ -50,7 +50,7 @@ fn emit_linker_script(dir: &str) {
     // `rerun-if-changed` is resolved relative to this build script's own cwd
     // (the `kernel` package root), but `rustc-link-arg` is passed straight
     // through to the linker invocation, whose cwd is wherever `cargo` itself
-    // was run from (the workspace root, per the top-level Makefile) — hence
+    // was run from (the workspace root, per the top-level Makefile), hence
     // the extra `kernel/` prefix only on the link-arg variant.
     let rel_path = format!("{dir}/linker.ld");
     println!("cargo:rustc-link-arg=-Tkernel/{rel_path}");

@@ -1,4 +1,4 @@
-/// ARM Generic Timer (physical, non-secure EL1) — fires on GIC PPI 30.
+/// ARM Generic Timer (physical, non-secure EL1), fires on GIC PPI 30.
 /// QEMU virt exposes CNTFRQ_EL0; derive a ~100 Hz tick from it so timing
 /// stays comparable across architectures regardless of the emulated
 /// counter frequency (unlike RISC-V's fixed-cycle-count SBI timer).

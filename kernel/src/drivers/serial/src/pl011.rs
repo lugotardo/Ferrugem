@@ -1,4 +1,4 @@
-/// PL011 UART hardware primitives, shared by every aarch64 board — only the
+/// PL011 UART hardware primitives, shared by every aarch64 board, only the
 /// base address (and, on Raspberry Pi 3, a GPIO pin-mux step already done
 /// once by `arch::aarch64::console::init` before this runs) differs.
 /// Ring buffer and interrupt routing live in `boards::current::intc`.

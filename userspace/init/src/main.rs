@@ -16,7 +16,7 @@ fn main() {
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
             Err(_) | Ok(0) => {
-                println!("\n[init] stdin closed — halting");
+                println!("\n[init] stdin closed, halting");
                 break;
             }
             Ok(_) => {}

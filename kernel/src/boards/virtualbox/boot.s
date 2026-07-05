@@ -29,7 +29,7 @@
 .code32
 .align 8
 
-/* Multiboot2 header — must be within first 32 KiB of the file.
+/* Multiboot2 header, must be within first 32 KiB of the file.
  * Placed at the very start of .text.boot. */
 mb2_header_start:
     .long MB2_MAGIC
@@ -59,33 +59,53 @@ _boot_start:
     orl   $3, %eax
     movl  %eax, _boot_pml4
 
-    /* 2. PDPT[0] → 1 GiB identity huge page */
-    movl  $0x83, _boot_pdpt
+    /* 2. PDPT[0] → PD */
+    movl  $_boot_pd, %eax
+    orl   $3, %eax
+    movl  %eax, _boot_pdpt
 
-    /* 3. CR3 ← PML4 */
+    /* 3. PD: 512 × 2 MiB present+writable+huge pages, identity-mapping the
+     * first 1 GiB. A single 1 GiB huge PDPTE used to do this instead, but
+     * that put the legacy VGA/BIOS MMIO hole (0xA0000-0xFFFFF, which
+     * contains the 0xB8000 text buffer boards::virtualbox::console writes
+     * to) inside one huge "RAM" mapping VirtualBox's PGM won't honor —
+     * silent instant triple fault on real VT-x the moment console::init()
+     * touches VGA memory (QEMU's software MMU tolerates it, so this never
+     * showed up there). 2 MiB pages sidestep it. */
+    xorl  %ecx, %ecx
+1:
+    movl  %ecx, %eax
+    shll  $21, %eax
+    orl   $0x83, %eax
+    movl  %eax, _boot_pd(,%ecx,8)
+    incl  %ecx
+    cmpl  $512, %ecx
+    jl    1b
+
+    /* 4. CR3 ← PML4 */
     movl  $_boot_pml4, %eax
     movl  %eax, %cr3
 
-    /* 4. CR4.PAE = 1 */
+    /* 5. CR4.PAE = 1 */
     movl  %cr4, %eax
     orl   $(1 << 5), %eax
     movl  %eax, %cr4
 
-    /* 5. IA32_EFER.LME = 1 */
+    /* 6. IA32_EFER.LME = 1 */
     movl  $0xC0000080, %ecx
     rdmsr
     orl   $(1 << 8), %eax
     wrmsr
 
-    /* 6. Load temporary 64-bit GDT */
+    /* 7. Load temporary 64-bit GDT */
     lgdt  _boot_gdt_ptr
 
-    /* 7. CR0: enable paging + protected mode + NE (required by VT-x FIXED0) */
+    /* 8. CR0: enable paging + protected mode + NE (required by VT-x FIXED0) */
     movl  %cr0, %eax
     orl   $(1 << 31) | (1 << 5) | 1, %eax
     movl  %eax, %cr0
 
-    /* 8. Far-jump to 64-bit code segment */
+    /* 9. Far-jump to 64-bit code segment */
     ljmpl $0x08, $_start64
 
 /* ── 64-bit entry ──────────────────────────────────────────────────────── */
@@ -121,6 +141,7 @@ _boot_gdt_ptr:
 .align 4096
 _boot_pml4: .skip 4096
 _boot_pdpt: .skip 4096
+_boot_pd:   .skip 4096
 
 /* ── Boot stack (16 KiB) ──────────────────────────────────────────────── */
 .align 16

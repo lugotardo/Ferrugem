@@ -1,14 +1,14 @@
 //! Hardware Abstraction Layer: the contract every board support package
 //! (BSP, under `crate::boards`) is expected to satisfy.
 //!
-//! The rest of the kernel never calls through these traits directly — it
+//! The rest of the kernel never calls through these traits directly, it
 //! calls the free functions re-exported by `boards::current` (matching the
 //! rest of the codebase's cfg-dispatch style). These traits exist so that
 //! adding a new board is checked by the compiler against one canonical
 //! interface instead of being discovered ad hoc by grepping existing boards.
 //!
 //! Nothing dispatches through these traits today (call sites use each
-//! board's free functions directly, as above) — `allow(dead_code)` silences
+//! board's free functions directly, as above), `allow(dead_code)` silences
 //! the resulting "trait is never used" lint rather than fabricating a caller.
 #![allow(dead_code)]
 

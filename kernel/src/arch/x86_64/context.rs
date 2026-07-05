@@ -47,7 +47,7 @@ pub unsafe extern "C" fn user_enter_trampoline() {
 /// rbx/rbp/r12-r15 (SysV callee-saved) to their values at the clone()/fork() call.
 ///
 /// A real clone() syscall preserves every register except rax/rcx/r11 across the
-/// fork — it duplicates the entire register file, not just the syscall args.
+/// fork, it duplicates the entire register file, not just the syscall args.
 /// libc's `__clone` trampoline relies on this, keeping its entry-point function
 /// pointer in r9 (not on the stack) and calling `*r9` in the child after the
 /// syscall returns; compiled callee-saved usage (musl's posix_spawn `child()`

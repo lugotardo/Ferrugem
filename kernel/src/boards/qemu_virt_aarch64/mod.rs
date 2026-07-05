@@ -8,14 +8,14 @@
 
 pub mod gic;
 // Cross-board neutral name `arch::aarch64` re-exports and dispatches
-// through — see the comment on that re-export for why.
+// through, see the comment on that re-export for why.
 pub use gic as intc;
 
 use crate::memory::mmap::{MemoryMap, RegionKind};
 
 /// Fase 1 hardcodes the QEMU virt default (128 MiB at 0x4000_0000) instead
 /// of parsing the DTB `arch::aarch64::boot::aarch64_fdt_ptr` stashed at
-/// boot — real FDT parsing (same approach as `riscv64::fdt`) is Fase 2 work.
+/// boot, real FDT parsing (same approach as `riscv64::fdt`) is Fase 2 work.
 pub fn parse_memory_map() -> MemoryMap {
     let mut map = MemoryMap::empty();
     map.add(0x4000_0000, 128 * 1024 * 1024, RegionKind::Usable);

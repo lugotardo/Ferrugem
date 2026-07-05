@@ -67,7 +67,7 @@ pub unsafe fn task_init_userspace_stack(stack: &mut [u8], user_rip: u64, user_rs
 
 /// Like `task_init_userspace_stack` but the child enters with rax=0 (fork returns 0 in child).
 /// `a0..a5` are the 6 syscall argument registers, and `callee_saved` is
-/// [rbx, rbp, r12, r13, r14, r15] — both captured at the time of the clone()/fork()
+/// [rbx, rbp, r12, r13, r14, r15], both captured at the time of the clone()/fork()
 /// call. A real clone() duplicates the entire register file except rax, and
 /// compiled code (libc's `__clone` trampoline keeps its entry-point function
 /// pointer in a register, not on the stack) depends on that, so the child must
@@ -129,7 +129,7 @@ pub const USER_ELF_STACK_TOP: usize = USER_BASE_VA + 0x1000_0000; // +256 MiB
 pub const USER_CODE_VA: usize = aarch64::USER_CODE_VA;
 #[cfg(target_arch = "aarch64")]
 pub const USER_STACK_TOP: usize = aarch64::USER_STACK_TOP;
-/// Reserved for Fase 2 (EL0 userspace) — see `aarch64::mod.rs`.
+/// Reserved for Fase 2 (EL0 userspace), see `aarch64::mod.rs`.
 #[cfg(target_arch = "aarch64")]
 pub const USER_BASE_VA: usize = aarch64::USER_BASE_VA;
 #[cfg(target_arch = "aarch64")]
@@ -329,6 +329,22 @@ pub fn paging_init() {
     aarch64::paging::init();
 }
 
+/// Board bring-up that can only run once paging is active, e.g. the
+/// Raspberry Pi 3's VideoCore-mailbox framebuffer, whose physical address is
+/// decided by firmware at runtime and needs remapping via `paging::
+/// map_uncached`, which needs the identity map `paging_init` just built.
+/// The USB host stack doesn't strictly need paging up, but is grouped here
+/// too since both are RPi3-only, best-effort hardware bring-up steps.
+/// Called from `init::kernel_main` right after `memory::init`. A no-op on
+/// every board that doesn't need it (which is all of them except RPi3).
+pub fn board_late_init() {
+    #[cfg(all(target_arch = "aarch64", feature = "board-raspberrypi3"))]
+    {
+        crate::boards::raspberrypi3::framebuffer::init();
+        crate::boards::raspberrypi3::usb::init();
+    }
+}
+
 /// Mark a 4 KiB physical page as not-present (guard page).
 /// Returns `true` if the MMU entry was successfully removed, `false` on any
 /// failure (OOM, unsupported on this arch) callers fall back to canary only.
@@ -365,7 +381,7 @@ pub fn read_fs_base() -> u64 {
 }
 
 /// Snapshot of the SysV callee-saved GPRs (rbx, rbp, r12-r15) at the current
-/// syscall entry — needed so fork()/clone() can hand them to the child exactly
+/// syscall entry, needed so fork()/clone() can hand them to the child exactly
 /// as a real clone() syscall would (it duplicates the whole register file
 /// except rax, not just the syscall-argument registers).
 /// On RISC-V, always returns zeros (fork() isn't exercised by real userspace yet).

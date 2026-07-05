@@ -1,6 +1,7 @@
 pub mod context;
 pub mod gdt;
 pub mod idt;
+pub mod pci;
 pub mod port;
 pub mod paging;
 
@@ -19,7 +20,7 @@ compile_error!("select exactly one x86_64 board feature");
 pub fn early_init() {
     // Enable SSE/SSE2: clear CR0.EM (bit 2), set CR0.MP (bit 1),
     // set CR4.OSFXSR (bit 9) and CR4.OSXMMEXCPT (bit 10).
-    // This must happen before any SSE instruction reaches the CPU — including
+    // This must happen before any SSE instruction reaches the CPU, including
     // those emitted by musl's memcpy/memset in user space.
     unsafe {
         // Enable SSE/SSE2: clear CR0.EM (bit 2), set CR0.MP (bit 1),

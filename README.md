@@ -50,17 +50,69 @@ make build
 
 # Generate an ISO for VirtualBox
 make virtualbox
+
+# Generate kernel8.img for a real Raspberry Pi 3 B (see below)
+make raspberrypi3-img
 ```
 
 > **Tip:** `make x86` connects serial I/O directly to your terminal. `make x86-display` opens a VGA window; keyboard input still works from the terminal via TCP.
 
 ---
 
+## Running on real Raspberry Pi 3 B hardware
+
+`make raspberrypi3` targets QEMU's `raspi3b` machine, which is close enough
+to real BCM2837 silicon to serve as the day-to-day test target, but real
+hardware needs a raw `kernel8.img` on an SD card, not an ELF handed to a
+`-kernel` flag. The console is authoritative over UART0 on the 40-pin header:
+**GPIO14/TXD0 = pin 8, GPIO15/RXD0 = pin 10, GND = pin 6**, read from a host
+machine with a 3.3V-level USB-TTL serial adapter at **115200 8N1**, this is
+the only console QEMU's `raspi3b` machine can show you, and the only one
+guaranteed to work if no HDMI display is attached.
+
+On real hardware, boot also requests a 1024x768x32 HDMI framebuffer from
+firmware over the VideoCore mailbox (`boards::raspberrypi3::{mailbox,
+framebuffer}`) and mirrors every console byte onto it with a small
+hand-drawn 5x7 bitmap font (`font5x7.rs`, original artwork for this
+project, not copied from any existing font). This is best-effort and purely
+a visual mirror: if no display is attached, firmware refuses the request, or
+(as on QEMU) the mailbox isn't implemented at all, it silently degrades to
+UART-only with no effect on boot. **Not yet verified on physical
+hardware**, QEMU can't emulate the VideoCore GPU that answers this mailbox,
+so this path has only been exercised by code review and by confirming the
+UART-only fallback still boots correctly under QEMU.
+
+1. **Build the image:**
+   ```bash
+   make raspberrypi3-img
+   ```
+   This needs `rust-objcopy` (`rustup component add llvm-tools && cargo install cargo-binutils`)
+   to turn the ELF into a flat `kernel8.img` binary at the fixed load address
+   (`0x80000`) real firmware expects.
+
+2. **Prepare a FAT32-formatted SD card** with, at the root of its boot partition:
+   - `kernel8.img` (just built)
+   - `kernel/src/boards/raspberrypi3/config.txt` (ships in this repo, sets
+     `arm_64bit=1` and brings UART0 up for firmware's side of the handshake;
+     see that file's comments)
+   - `bootcode.bin`, `start.elf`, `fixup.dat`, official Raspberry Pi
+     firmware, **not built by this project**: grab the latest from
+     [raspberrypi/firmware's `boot/` directory](https://github.com/raspberrypi/firmware/tree/master/boot)
+
+3. Insert the SD card, connect the serial adapter, and power on the board.
+
+**Known limitation:** Fase 1 hardcodes a conservative 128 MiB RAM map
+(`boards::raspberrypi3::RAM_FALLBACK_SIZE`) instead of querying the real 1 GiB
+via a VideoCore mailbox call, the board boots and runs, it just doesn't see
+all of its RAM yet. Real mailbox support is Fase 2 work.
+
+---
+
 ## Supported Architectures & Boards
 
 The kernel (`kernel/src/arch/`) only contains CPU-generic code; everything
-specific to one platform — boot glue, linker script, peripheral addresses,
-interrupt routing, memory map — lives in a Board Support Package under
+specific to one platform, boot glue, linker script, peripheral addresses,
+interrupt routing, memory map, lives in a Board Support Package under
 `kernel/src/boards/`, selected at compile time by a `board-*` Cargo feature
 (see `Makefile`'s `BOARD=` variable). Adding a new board means adding a new
 BSP, not touching the generic kernel.
@@ -69,7 +121,7 @@ BSP, not touching the generic kernel.
 |---|---|---|
 | x86\_64 | Active | `qemu-pc` (QEMU q35, default), `virtualbox` |
 | RISC-V 64 | Active | `qemu-virt` (default) |
-| ARM64 (AArch64) | Active | `qemu-virt` (default), `raspberrypi3` (BCM2837, tested via QEMU's `raspi3b` machine) |
+| ARM64 (AArch64) | Active | `qemu-virt` (default), `raspberrypi3` (BCM2837, day-to-day tested via QEMU's `raspi3b` machine, prepared to boot on real Raspberry Pi 3 B hardware, see below) |
 
 ---
 

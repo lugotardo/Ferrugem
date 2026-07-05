@@ -44,3 +44,25 @@ pub unsafe fn inw(port: u16) -> u16 {
     );
     val
 }
+
+#[inline]
+pub unsafe fn outl(port: u16, val: u32) {
+    core::arch::asm!(
+        "out dx, eax",
+        in("dx") port,
+        in("eax") val,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+#[inline]
+pub unsafe fn inl(port: u16) -> u32 {
+    let val: u32;
+    core::arch::asm!(
+        "in eax, dx",
+        out("eax") val,
+        in("dx") port,
+        options(nomem, nostack, preserves_flags)
+    );
+    val
+}

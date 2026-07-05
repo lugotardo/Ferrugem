@@ -1,1 +1,5 @@
 /target
+/kernel8.img
+/*.iso
+/iso/boot/kernel
+/ferrugem-com1.log

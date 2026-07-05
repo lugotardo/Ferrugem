@@ -2,20 +2,18 @@
 
 use crate::drivers::keyboard::src::uart_kbd;
 
-pub use uart_kbd::scancode_to_ascii;
-
 pub fn init() {}
 
 pub fn handle_irq() {}
 
 pub fn has_input() -> bool {
-    crate::drivers::serial::has_input()
+    uart_kbd::has_input()
 }
 
-pub fn read_scancode() -> Option<u8> {
-    crate::drivers::serial::read_byte()
+pub fn read_byte() -> Option<u8> {
+    uart_kbd::read_byte()
 }
 
-pub fn read_scancode_blocking() -> u8 {
-    crate::drivers::serial::read_byte_blocking()
+pub fn read_byte_blocking() -> u8 {
+    uart_kbd::read_byte_blocking()
 }

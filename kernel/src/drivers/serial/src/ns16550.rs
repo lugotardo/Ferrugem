@@ -1,4 +1,4 @@
-/// NS16550A UART hardware primitives — QEMU virt board at 0x1000_0000 (RISC-V).
+/// NS16550A UART hardware primitives, QEMU virt board at 0x1000_0000 (RISC-V).
 /// Ring buffer and interrupt routing live in arch/riscv64.rs.
 
 const UART_BASE: usize = 0x1000_0000;

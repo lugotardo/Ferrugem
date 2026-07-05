@@ -63,7 +63,7 @@ pub fn is_elf(data: &[u8]) -> bool {
 ///
 /// Returns `(entry_va, heap_start_va, phdr_va, phnum, phentsize)` on success.
 /// `phdr_va` is the virtual address of the ELF program headers in the process
-/// address space — needed for `AT_PHDR` in the auxiliary vector.
+/// address space, needed for `AT_PHDR` in the auxiliary vector.
 /// Returns `None` on any error (bad ELF, OOM, VA conflict, out-of-bounds data).
 pub fn load(data: &[u8], pt_phys: u64) -> Option<(usize, usize, usize, usize, usize)> {
     if !is_elf(data) { return None; }

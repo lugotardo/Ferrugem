@@ -1,6 +1,6 @@
 /// GICv2 driver (QEMU `virt` machine, `gic-version=2`).
 /// Distributor at 0x0800_0000, CPU interface at 0x0801_0000.
-/// Plays the same role here as `riscv64::plic` — routes both the ARM
+/// Plays the same role here as `riscv64::plic`, routes both the ARM
 /// generic timer PPI and the PL011 SPI, since aarch64 has no separate
 /// CSR-based timer-interrupt path like RISC-V's `sie.STIE`.
 

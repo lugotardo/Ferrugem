@@ -33,7 +33,7 @@ SECTIONS {
     }
     _kernel_end = .;
 
-    /* Discard C++ unwinding frames.  Do NOT discard .note* — that would nuke
+    /* Discard C++ unwinding frames.  Do NOT discard .note*, that would nuke
      * .note.Xen (needed by QEMU PVH).  Other .note sections are harmless. */
     /DISCARD/ : { *(.eh_frame) *(.gcc_except_table) }
 }

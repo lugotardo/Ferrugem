@@ -4,8 +4,8 @@
 // them so the first PT_LOAD page lands at USER_BASE_VA (arch-specific).
 //
 // Layout per binary:
-//   offset 0x00 (64 B): ELF header   — ET_DYN, e_entry=0, e_phoff=64
-//   offset 0x40 (56 B): PT_LOAD PHDR — p_vaddr=0, p_offset=0x78
+//   offset 0x00 (64 B): ELF header  , ET_DYN, e_entry=0, e_phoff=64
+//   offset 0x40 (56 B): PT_LOAD PHDR, p_vaddr=0, p_offset=0x78
 //   offset 0x78       : code + message
 //
 // Syscall ABI:
@@ -128,7 +128,7 @@ pub static HELLO_ELF_X86: [u8; 188] = [
 
 /// RISC-V U-mode program: greeting via ecall then exit.
 ///
-/// RV64I encoding — RISC-V Linux ABI: a7=nr, a0-a5=args, a0=retval.
+/// RV64I encoding, RISC-V Linux ABI: a7=nr, a0-a5=args, a0=retval.
 ///
 /// Byte layout (4-byte instructions, little-endian):
 ///   0  : addi a7, x0, 1    (SYS_WRITE)

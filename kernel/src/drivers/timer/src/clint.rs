@@ -1,4 +1,4 @@
-/// RISC-V SBI timer — arms the supervisor timer via OpenSBI.
+/// RISC-V SBI timer, arms the supervisor timer via OpenSBI.
 
 use crate::arch::riscv64::sbi;
 

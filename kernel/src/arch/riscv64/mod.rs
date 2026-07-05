@@ -3,7 +3,7 @@ pub mod trap;
 pub mod paging;
 
 // `console`/`sbi`/`plic`/`fdt` are platform (BSP) concerns, not CPU-ISA
-// ones — re-exported here (rather than moved call-by-call) so existing
+// ones, re-exported here (rather than moved call-by-call) so existing
 // `super::sbi`/`super::plic`/`super::console` references in `trap.rs` keep
 // working unchanged regardless of which riscv64 board is selected.
 pub use crate::boards::current::{console, fdt, plic, sbi};
@@ -23,7 +23,7 @@ pub fn interrupts_init() {
         // Enable supervisor-mode global interrupt enable (sstatus.SIE = bit 1)
         core::arch::asm!("csrsi sstatus, 0x2", options(nostack));
         // Enable supervisor timer interrupt (sie.STIE = bit 5) and supervisor
-        // external interrupt (sie.SEIE = bit 9) — without SEIE, PLIC-routed
+        // external interrupt (sie.SEIE = bit 9), without SEIE, PLIC-routed
         // interrupts (including the UART's RX interrupt) never trap, so serial
         // input never reaches the software ring buffer and typing appears dead.
         let stie: u64 = (1 << 5) | (1 << 9);

@@ -9,7 +9,7 @@ pub mod fdt;
 pub mod plic;
 pub mod sbi;
 
-/// Board bring-up: nothing to configure — OpenSBI already owns the UART.
+/// Board bring-up: nothing to configure, OpenSBI already owns the UART.
 /// Called from `arch::riscv64::early_init`.
 pub fn init() {
     console::init();

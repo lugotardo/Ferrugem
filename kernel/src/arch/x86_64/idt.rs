@@ -112,7 +112,7 @@ unsafe extern "C" fn apply_exec_redirect(stack: *mut u64) {
 }
 
 // syscall_entry_rust(nr, a0, a1, a2, a3, a4, a5, user_ip, user_sp)
-// SysV register args: rdi rsi rdx rcx r8 r9  — 6 regs max
+// SysV register args: rdi rsi rdx rcx r8 r9 , 6 regs max
 // Stack args (at [rsp+8], [rsp+16], [rsp+24]): a5, user_ip, user_sp
 #[unsafe(no_mangle)]
 unsafe extern "C" fn syscall_entry_rust(
@@ -125,7 +125,7 @@ unsafe extern "C" fn syscall_entry_rust(
     crate::syscall::dispatch(nr, a0, a1, a2, a3, a4, a5)
 }
 
-// INT 0x80 syscall entry — Linux x86_64 ABI: rax=nr rdi=a0 rsi=a1 rdx=a2 r10=a3 r8=a4 r9=a5
+// INT 0x80 syscall entry, Linux x86_64 ABI: rax=nr rdi=a0 rsi=a1 rdx=a2 r10=a3 r8=a4 r9=a5
 //
 // Stack layout after 11 pushes (S11 = rsp, S11 mod 16 = 0):
 //   [S11+ 0]=rcx  [+8]=r9(a5)  [+16]=r8(a4)  [+24]=r11  [+32]=r10(a3)
@@ -137,13 +137,13 @@ unsafe extern "C" fn syscall_entry_rust(
 // Stack args (7th..9th): [rsp+8]=a5  [rsp+16]=user_ip  [rsp+24]=user_rsp
 //
 // Stack setup (sub 8 FIRST for alignment, then 3 pushes = 32 bytes total):
-//   sub rsp,8    (alignment)  — rsp = S11-8
-//   push user_rsp (9th arg)  — rsp = S11-16; load from [rsp+120]=[S11+112]
-//   push user_rip (8th arg)  — rsp = S11-24; load from [rsp+104]=[S11+88]
-//   push r9/a5   (7th arg)   — rsp = S11-32 (mod 16 = 0) ✓
+//   sub rsp,8    (alignment) , rsp = S11-8
+//   push user_rsp (9th arg) , rsp = S11-16; load from [rsp+120]=[S11+112]
+//   push user_rip (8th arg) , rsp = S11-24; load from [rsp+104]=[S11+88]
+//   push r9/a5   (7th arg)  , rsp = S11-32 (mod 16 = 0) ✓
 //
 // After `call` (ret-addr pushed → rsp=S11-40):
-//   [rsp+8]=a5  [rsp+16]=user_rip  [rsp+24]=user_rsp   — 7th, 8th, 9th args ✓
+//   [rsp+8]=a5  [rsp+16]=user_rip  [rsp+24]=user_rsp  , 7th, 8th, 9th args ✓
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn isr128() {
@@ -156,12 +156,12 @@ unsafe extern "C" fn isr128() {
         "mov r11, rax",
 
         // Align first, then push 3 stack args (9th, 8th, 7th)
-        "sub rsp, 8",                       // rsp = S11-8 — alignment pad
+        "sub rsp, 8",                       // rsp = S11-8, alignment pad
         "mov rax, qword ptr [rsp + 120]", // rax = user_rsp ([S11-8+120]=[S11+112])
-        "push rax",                         // rsp = S11-16 — 9th arg
+        "push rax",                         // rsp = S11-16, 9th arg
         "mov rax, qword ptr [rsp + 104]", // rax = user_rip ([S11-16+104]=[S11+88])
-        "push rax",                         // rsp = S11-24 — 8th arg
-        "push r9",                          // rsp = S11-32 — 7th arg (a5 = user r9)
+        "push rax",                         // rsp = S11-24, 8th arg
+        "push r9",                          // rsp = S11-32, 7th arg (a5 = user r9)
         // (S11-32) mod 16 = 0 ✓ → aligned for call
 
         // Set up 6 register args: rdi=nr rsi=a0 rdx=a1 rcx=a2 r8=a3 r9=a4
@@ -207,7 +207,7 @@ pub(crate) static mut SYSCALL_KERNEL_RSP: u64 = 0;
 #[unsafe(no_mangle)]
 static mut SYSCALL_USER_RSP: u64 = 0;
 
-/// SysV callee-saved registers, snapshotted (not saved/restored — they're never
+/// SysV callee-saved registers, snapshotted (not saved/restored, they're never
 /// clobbered by our own asm, so the physical registers stay correct for the
 /// parent's own sysretq) on every syscall entry so fork()/clone() can hand them
 /// to the child. A real clone() duplicates the *entire* register file except
@@ -241,7 +241,7 @@ unsafe extern "C" fn apply_exec_redirect_syscall(saved_rcx: *mut u64) {
     }
 }
 
-/// SYSCALL entry — 64-bit Linux ABI.
+/// SYSCALL entry, 64-bit Linux ABI.
 ///
 /// Linux syscall ABI: rcx=user_rip, r11=user_rflags are destroyed by SYSCALL
 /// hardware. ALL other registers must be preserved by the kernel (including
@@ -269,7 +269,7 @@ pub(crate) unsafe extern "C" fn syscall_entry_asm() {
         // Save user RSP; switch to kernel RSP
         "mov qword ptr [rip + {u_rsp}], rsp",
         "mov rsp, qword ptr [rip + {k_rsp}]",
-        // Snapshot callee-saved regs (untouched by the rest of this stub — this is a
+        // Snapshot callee-saved regs (untouched by the rest of this stub, this is a
         // read, not a save/restore) so fork()/clone() can hand them to the child.
         "mov qword ptr [rip + {sv_rbx}], rbx",
         "mov qword ptr [rip + {sv_rbp}], rbp",
@@ -287,7 +287,7 @@ pub(crate) unsafe extern "C" fn syscall_entry_asm() {
         "push rdx",   // [K-40] user's rdx = a2
         "push r8",    // [K-48] user's r8  = a4
         "push r9",    // [K-56] user's r9  = a5
-        "push r10",   // [K-64] user's r10 = a3  — rsp=K-64 (mod16=0)
+        "push r10",   // [K-64] user's r10 = a3 , rsp=K-64 (mod16=0)
         // Push 3 stack args for syscall_entry_rust (args 7..9).
         // SysV AMD64: before call, [rsp]=arg7, [rsp+8]=arg8, [rsp+16]=arg9.
         // Push in reverse (9th first); need rsp=K-96 (mod16=0) at call.
@@ -295,7 +295,7 @@ pub(crate) unsafe extern "C" fn syscall_entry_asm() {
         "push qword ptr [rip + {u_rsp}]",           // [K-80] user_sp  (9th arg)
         "push rcx",                                  // [K-88] user_ip  (8th arg; rcx=user_rip ✓)
         "push r9",                                   // [K-96] a5       (7th arg; r9=user's r9 ✓)
-        // rsp=K-96 (mod16=0) — 16-aligned for call ✓
+        // rsp=K-96 (mod16=0), 16-aligned for call ✓
         // Remap to SysV register args for syscall_entry_rust:
         //   rdi=nr, rsi=a0, rdx=a1, rcx=a2, r8=a3, r9=a4
         "mov r9,  r8",   // r9  = a4 (user's r8)
@@ -341,7 +341,7 @@ pub(crate) unsafe extern "C" fn syscall_entry_asm() {
     );
 }
 
-// ── #GP (vector 13) — custom handler ─────────────────────────────────────────
+// ── #GP (vector 13), custom handler ─────────────────────────────────────────
 //
 // CPU pushes error_code, then RIP/CS/RFLAGS/RSP/SS.
 // We read those before any register save so the Rust handler gets the full picture.
@@ -433,7 +433,7 @@ extern "C" fn gpf_handler(gprs: *const SavedGprs, frame: *const u64) {
     loop { unsafe { core::arch::asm!("hlt") } }
 }
 
-// ── #PF (vector 14) — custom handler ─────────────────────────────────────────
+// ── #PF (vector 14), custom handler ─────────────────────────────────────────
 //
 // CPU pushes an error code for #PF, which the generic make_isr! macro does
 // not handle (iretq would pop the error code as the return RIP and crash).
@@ -499,12 +499,12 @@ pub(crate) fn print_hex(val: u64) {
 // Called by isr14. error_code bit 2 = user-mode fault.
 extern "C" fn pagefault_handler_x86(va: u64, error_code: u64, rip: u64, gprs: *const PfSavedGprs) {
     if error_code & 4 == 0 {
-        // Fault from kernel mode — panic
+        // Fault from kernel mode, panic
         console::print_str("\n[EXCEPTION] Kernel Page Fault\n");
         loop { unsafe { core::arch::asm!("hlt") } }
     }
     if !crate::scheduler::handle_user_page_fault(va) {
-        // Unresolvable user fault — print VA/error so we can diagnose, then SIGSEGV
+        // Unresolvable user fault, print VA/error so we can diagnose, then SIGSEGV
         console::print_str("[#PF] va=0x");
         print_hex(va);
         console::print_str(" err=0x");
@@ -535,7 +535,7 @@ extern "C" fn pagefault_handler_x86(va: u64, error_code: u64, rip: u64, gprs: *c
         crate::scheduler::exit_current(139); // 128 + SIGSEGV(11)
         loop { unsafe { core::arch::asm!("hlt") } }
     }
-    // Fault resolved — iretq in isr14 retries the faulting instruction.
+    // Fault resolved, iretq in isr14 retries the faulting instruction.
 }
 
 extern "C" fn common_dispatch(vector: u8) {
@@ -557,6 +557,15 @@ extern "C" fn common_dispatch(vector: u8) {
         // IRQ0 PIT timer
         32 => {
             crate::scheduler::tick();
+            // USB HID keyboard input (`drivers::usb::hid`) is polled, not
+            // IRQ-driven (UHCI runs with USBINTR=0), so a task blocked in
+            // `block_on_tty` would otherwise only ever be woken by IRQ1
+            // (PS/2) or IRQ4 (serial) traffic and never get a chance to
+            // re-poll USB. Waking it every tick here is a safe no-op when
+            // nothing is actually waiting (`wake_tty_waiter` no-ops with no
+            // waiter) — mirrors `boards::raspberrypi3::intc::handle` doing
+            // the same for its own polled DWC2 USB HID keyboard.
+            crate::scheduler::wake_tty_waiter();
             pic::eoi(0);
         }
         // IRQ1 PS/2 keyboard

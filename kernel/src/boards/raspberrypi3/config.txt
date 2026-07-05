@@ -1,0 +1,27 @@
+# Ferrugem - boot config for a real Raspberry Pi 3 B (BCM2837).
+#
+# Copy this file, alongside kernel8.img (built by `make raspberrypi3-img`)
+# and the Raspberry Pi firmware boot files (bootcode.bin, start.elf,
+# fixup.dat, get them from https://github.com/raspberrypi/firmware/tree/master/boot,
+# NOT built by this project), onto the FAT32 boot partition of the SD card.
+# See README.md's "Running on real Raspberry Pi 3 B hardware" section.
+
+# Boot the ARM cores in AArch64 mode and load kernel8.img (the name
+# firmware defaults to when arm_64bit=1, but spelled out here for clarity —
+# see kernel/src/boards/raspberrypi3/linker.ld for why it must load at 0x80000).
+arm_64bit=1
+kernel=kernel8.img
+
+# Route PL011 (UART0), normally wired to the onboard Bluetooth module on
+# Pi 3, back onto the GPIO14/15 header pins, and have firmware itself bring
+# it up at a known 115200 8N1 (belt-and-suspenders: gpio.rs also configures
+# UART0 in software and does not depend on this). Also fixes the VPU core
+# clock so the UART reference clock (and thus its baud rate) does not drift
+# under thermal/voltage frequency scaling.
+enable_uart=1
+core_freq=250
+dtoverlay=pi3-disable-bt
+
+# No display driver in this kernel yet, all console I/O is over the UART0
+# serial pins (GPIO14/TXD0 = pin 8, GPIO15/RXD0 = pin 10, GND = pin 6 on the
+# 40-pin header), read via a 3.3V-level USB-TTL adapter at 115200 8N1.

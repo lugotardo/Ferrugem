@@ -152,7 +152,7 @@ pub fn create_process_page_table(code_phys: usize, stack_phys: usize) -> Option<
         let l1   = l1_phys   as *mut u64;
         let l0   = l0_phys   as *mut u64;
 
-        // Share kernel identity map (L2[0..4]) — no PAGE_U.
+        // Share kernel identity map (L2[0..4]), no PAGE_U.
         for i in 0..4usize {
             *root.add(i) = ROOT.entries[i];
         }
@@ -196,7 +196,7 @@ pub fn clone_user_page_table(src_phys: u64) -> Option<u64> {
         for vpn2 in 4..512usize {
             let e2 = *src_root.add(vpn2);
             if e2 & PAGE_V == 0 { continue; }
-            // 1 GiB huge page — share physical
+            // 1 GiB huge page, share physical
             if e2 & (PAGE_R | PAGE_W | PAGE_X) != 0 { *new_root.add(vpn2) = e2; continue; }
 
             let src_l1_phys = ((e2 >> 10) << 12) as usize;
@@ -208,7 +208,7 @@ pub fn clone_user_page_table(src_phys: u64) -> Option<u64> {
             for vpn1 in 0..512usize {
                 let e1 = *src_l1.add(vpn1);
                 if e1 & PAGE_V == 0 { continue; }
-                // 2 MiB huge page — share
+                // 2 MiB huge page, share
                 if e1 & (PAGE_R | PAGE_W | PAGE_X) != 0 { *new_l1.add(vpn1) = e1; continue; }
 
                 let src_l0_phys = ((e1 >> 10) << 12) as usize;

@@ -69,7 +69,7 @@ pub fn set_kernel_stack(sp: u64) {
 
 /// Userspace (EL0) task entry is Fase 2 work: it needs SVC-based syscall
 /// entry, ELR_EL1/SPSR_EL1 configured for an EL0 return, and a real
-/// per-process TTBR0_EL1 — none of which exist yet (see `paging.rs`).
+/// per-process TTBR0_EL1, none of which exist yet (see `paging.rs`).
 pub unsafe fn task_init_userspace_stack(_stack: &mut [u8], _user_rip: u64, _user_rsp: u64) -> u64 {
     unimplemented!("aarch64 fase 2: EL0 userspace not implemented yet")
 }

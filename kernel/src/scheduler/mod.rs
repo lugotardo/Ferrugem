@@ -22,7 +22,7 @@ const GUARD_SIZE:  usize = 4096;               // one guard page before each sta
 const USER_STACK_PAGES: usize = 8;
 const USER_STACK_SIZE:  usize = USER_STACK_PAGES * 4096;
 // Shared cap on both argv[] and envp[] entry counts (independent vectors,
-// same bound) — kept as one constant so the fixed-size staging arrays below
+// same bound), kept as one constant so the fixed-size staging arrays below
 // have a single source of truth.
 const MAX_EXEC_VEC: usize = 64;
 const MAX_ARG_LEN:  usize = 4096;
@@ -214,7 +214,7 @@ unsafe fn user_cstr<'a>(ptr: *const u8, max_len: usize) -> Option<&'a [u8]> {
         if *ptr.add(len) == 0 { return Some(core::slice::from_raw_parts(ptr, len)); }
         len += 1;
     }
-    None // unterminated within bound — treat as malformed
+    None // unterminated within bound, treat as malformed
 }
 
 /// Read a NUL-terminated array of `*const u8` from user space (an argv/envp
@@ -305,9 +305,9 @@ unsafe fn setup_abi_stack(
 
     // ── ABI table: argc / argv[] / NULL / envp[] / NULL / auxv[] ────────────
     // auxv entries we provide (type, value pairs, 8 bytes each):
-    //   AT_PHDR   (3), phdr_va       — program headers VA (required for TLS init)
-    //   AT_PHENT  (4), phentsize     — size of each program header entry
-    //   AT_PHNUM  (5), phnum         — number of program header entries
+    //   AT_PHDR   (3), phdr_va      , program headers VA (required for TLS init)
+    //   AT_PHENT  (4), phentsize    , size of each program header entry
+    //   AT_PHNUM  (5), phnum        , number of program header entries
     //   AT_PAGESZ (6), 4096
     //   AT_UID    (11), 0
     //   AT_EUID   (12), 0
@@ -397,7 +397,7 @@ pub fn spawn_elf(data: &[u8], argv0: &str) -> Option<usize> {
         let (entry, heap_start, phdr_va, phnum, phentsize) = crate::elf::load(data, pt_phys)?;
 
         // Allocate and map the initial user stack region.
-        // Use USER_ELF_STACK_TOP which is 256 MiB above USER_BASE_VA — well
+        // Use USER_ELF_STACK_TOP which is 256 MiB above USER_BASE_VA, well
         // above any binary's BSS so there is no overlap with PT_LOAD segments.
         let stack_top   = crate::arch::USER_ELF_STACK_TOP;
         let ustack_phys = map_user_init_stack(pt_phys, stack_top)?;
@@ -431,7 +431,7 @@ pub fn spawn_elf(data: &[u8], argv0: &str) -> Option<usize> {
 /// table and heap_brk, then set up a new kernel stack so the child enters
 /// user mode at `user_ip` / `user_sp` and returns 0 from the fork syscall.
 ///
-/// `regs` are the 6 syscall argument registers at the time of the call — a real
+/// `regs` are the 6 syscall argument registers at the time of the call, a real
 /// clone()/fork() preserves them across the fork, and libc's `__clone` trampoline
 /// on x86_64 depends on that (see `task_init_fork_stack`).
 ///
@@ -498,7 +498,7 @@ pub fn spawn_fork(user_ip: u64, user_sp: u64, regs: [u64; 6], callee_saved: [u64
 
 /// Replace the current task's address space in-place with a fresh ELF binary.
 /// `argv_ptr`/`envp_ptr` are the raw argv[]/envp[] vectors passed to execve(2),
-/// still pointing into the CALLER's (pre-exec) address space — read them
+/// still pointing into the CALLER's (pre-exec) address space, read them
 /// before touching the new page table below, since both are only valid until
 /// the CR3 switch the trap handler performs after this function returns.
 /// Returns (new_entry, new_stack_top, new_pt_phys) on success.
@@ -522,7 +522,7 @@ pub fn execve_current(data: &[u8], argv0: &str, argv_ptr: usize, envp_ptr: usize
         )?;
 
         let task = TASKS[CURRENT].as_mut()?;
-        // Old page table and its mapped frames are leaked — a page-table walker is
+        // Old page table and its mapped frames are leaked, a page-table walker is
         // needed to free them properly; deferred until memory management matures.
         task.page_table_phys = new_pt;
         task.heap_brk        = heap_start as u64;
@@ -888,7 +888,7 @@ pub fn kill_task(slot: usize) -> bool {
 /// fault, address below USER_BASE_VA, or OOM).
 pub fn handle_user_page_fault(va: u64) -> bool {
     let pt_phys = current_page_table_phys();
-    if pt_phys == 0 { return false; }  // kernel task — no user PT
+    if pt_phys == 0 { return false; }  // kernel task, no user PT
 
     let va_page = (va as usize) & !0xFFF;
     if va_page < crate::arch::USER_BASE_VA { return false; }

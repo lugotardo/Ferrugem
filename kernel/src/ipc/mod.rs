@@ -1,6 +1,6 @@
 /// IPC: pipes and message queues.
 ///
-/// The pipe pool is intentionally standalone — it has no dependency on the
+/// The pipe pool is intentionally standalone, it has no dependency on the
 /// scheduler.  Wake-up of blocked readers is handled by the scheduler itself
 /// (see `scheduler::wake_pipe_waiter` / `scheduler::block_on_pipe`).
 

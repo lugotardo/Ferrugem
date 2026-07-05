@@ -1,6 +1,6 @@
 //! aarch64 exception vector table (EL1).
 //!
-//! Fase 1 only ever runs kernel code at EL1h (SPSel=1) — there is no EL0
+//! Fase 1 only ever runs kernel code at EL1h (SPSel=1), there is no EL0
 //! yet, so only the "current EL, SPx" IRQ/sync vectors (table offset
 //! 0x200-0x3FF) are expected to fire for real. Every other slot still gets
 //! a valid handler (the same fatal path) since an unpopulated VBAR_EL1 slot

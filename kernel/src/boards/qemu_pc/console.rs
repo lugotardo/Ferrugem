@@ -18,7 +18,7 @@ fn serial_init() {
         port::outb(COM1 + 0, 0x01); // divisor lo: 115200 baud
         port::outb(COM1 + 1, 0x00); // divisor hi
         port::outb(COM1 + 3, 0x03); // 8N1, DLAB off
-        port::outb(COM1 + 2, 0x00); // leave FIFO disabled — com1::init() configures it
+        port::outb(COM1 + 2, 0x00); // leave FIFO disabled, com1::init() configures it
         port::outb(COM1 + 4, 0x0B); // RTS+DTR
     }
 }

@@ -1,22 +1,32 @@
-/// Keyboard driver for aarch64: delegates I/O to the serial driver, same as
-/// riscv64 (no PS/2 controller on QEMU virt).
+/// Keyboard driver for aarch64: on real Raspberry Pi 3 hardware, polls
+/// whatever USB HID boot-protocol keyboard(s) were found during boot
+/// (`boards::raspberrypi3::usb`), decoded through the same shared
+/// `KeyboardState` machinery x86_64's PS/2 driver uses, falling back to
+/// treating UART bytes as already-decoded input - the same fallback riscv64
+/// and QEMU virt aarch64 use unconditionally (no USB stack exists for either).
 
 use crate::drivers::keyboard::src::uart_kbd;
-
-pub use uart_kbd::scancode_to_ascii;
 
 pub fn init() {}
 
 pub fn handle_irq() {}
 
 pub fn has_input() -> bool {
-    crate::drivers::serial::has_input()
+    #[cfg(feature = "board-raspberrypi3")]
+    if crate::boards::raspberrypi3::usb::has_key() {
+        return true;
+    }
+    uart_kbd::has_input()
 }
 
-pub fn read_scancode() -> Option<u8> {
-    crate::drivers::serial::read_byte()
+pub fn read_byte() -> Option<u8> {
+    #[cfg(feature = "board-raspberrypi3")]
+    if let Some(b) = crate::boards::raspberrypi3::usb::take_key() {
+        return Some(b);
+    }
+    uart_kbd::read_byte()
 }
 
-pub fn read_scancode_blocking() -> u8 {
-    crate::drivers::serial::read_byte_blocking()
+pub fn read_byte_blocking() -> u8 {
+    uart_kbd::read_byte_blocking()
 }

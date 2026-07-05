@@ -689,19 +689,14 @@ fn read_key() -> Key {
 fn read_char() -> u8 {
     loop {
         if let Some(b) = crate::drivers::serial::read_byte() { return b; }
-        if let Some(sc) = crate::drivers::keyboard::read_scancode() {
-            if let Some(c) = crate::drivers::keyboard::scancode_to_ascii(sc) { return c; }
-        }
+        if let Some(c) = crate::drivers::keyboard::read_byte() { return c; }
         crate::scheduler::block_on_tty();
     }
 }
 
 fn read_char_nonblocking() -> Option<u8> {
     if let Some(b) = crate::drivers::serial::read_byte() { return Some(b); }
-    if let Some(sc) = crate::drivers::keyboard::read_scancode() {
-        return crate::drivers::keyboard::scancode_to_ascii(sc);
-    }
-    None
+    crate::drivers::keyboard::read_byte()
 }
 
 fn read_char_timeout(spins: u64) -> Option<u8> {

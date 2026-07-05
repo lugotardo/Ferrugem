@@ -1,4 +1,4 @@
-/// COM1 serial hardware primitives — port 0x3F8, NS16550-compatible (x86_64).
+/// COM1 serial hardware primitives, port 0x3F8, NS16550-compatible (x86_64).
 /// Ring buffer and interrupt routing live in arch/x86_64.rs.
 
 use crate::arch::x86_64::{pic, port};

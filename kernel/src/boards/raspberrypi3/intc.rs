@@ -26,7 +26,7 @@ const ENABLE_IRQS_2: usize = LEGACY_BASE + 0x14;
 /// peripheral IRQs 32-63).
 pub const UART_IRQ: u32 = 57;
 /// Synthetic id for the ARM generic timer's non-secure physical comparator
-/// (`CNTPNSIRQ`) — the QA7 block has no peripheral-IRQ-style numbering.
+/// (`CNTPNSIRQ`), the QA7 block has no peripheral-IRQ-style numbering.
 pub const TIMER_IRQ: u32 = 1;
 
 fn reg(addr: usize) -> *mut u32 {
@@ -65,7 +65,7 @@ pub fn disable(id: u32) {
                 reg(CORE0_TIMER_IRQCNTL).write_volatile(ctl & !CORE0_SRC_CNTPNSIRQ);
             }
             // The legacy controller only exposes a DISABLE_IRQS_2 *set*
-            // register (writing 1 disables, writing 0 is a no-op) — no
+            // register (writing 1 disables, writing 0 is a no-op), no
             // masking needed beyond what `init` already enabled once.
             _ => {}
         }
@@ -87,6 +87,13 @@ pub fn handle() {
         if source & CORE0_SRC_CNTPNSIRQ != 0 {
             crate::scheduler::tick();
             crate::drivers::timer::rearm();
+            // USB HID keyboard input (`usb::hid`) is polled, not
+            // IRQ-driven, a task blocked in `block_on_tty` only gets
+            // re-scheduled to re-check it via an explicit wake, which
+            // otherwise only ever comes from the UART RX interrupt. Waking
+            // it every tick (~10 ms) here is a safe no-op when nothing is
+            // actually waiting (`wake_tty_waiter` no-ops with no waiter).
+            crate::scheduler::wake_tty_waiter();
         }
         if source & CORE0_SRC_GPU != 0 {
             let pending = reg(IRQ_PENDING_2).read_volatile();
