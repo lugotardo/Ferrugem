@@ -20,6 +20,15 @@ pub fn has_input() -> bool {
 }
 
 pub fn read_byte() -> Option<u8> {
+    // Shift+PageUp/PageDown scrollback (see `boards::raspberrypi3::hdmi`/
+    // `fbconsole::scroll_view`): only reachable via a USB HID keyboard, the
+    // UART fallback below carries already-decoded bytes with no Shift/
+    // scancode concept to intercept - a real terminal's own scrollback
+    // already covers that path anyway, same reasoning as x86_64's VGA console.
+    #[cfg(feature = "board-raspberrypi3")]
+    if let Some(dir) = crate::boards::raspberrypi3::usb::take_scroll() {
+        crate::boards::raspberrypi3::fbconsole::scroll_view(dir);
+    }
     #[cfg(feature = "board-raspberrypi3")]
     if let Some(b) = crate::boards::raspberrypi3::usb::take_key() {
         return Some(b);

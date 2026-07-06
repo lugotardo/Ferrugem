@@ -307,6 +307,14 @@ pub fn reset_and_enable_port(port_1based: u8) -> Option<Speed> {
     Some(if status & PORTSC_LSDA != 0 { Speed::Low } else { Speed::Full })
 }
 
+/// UHCI's TD MaxLen field is 11 bits, encoding `length - 1` — the largest
+/// length a single TD can carry is therefore 2048 bytes, independent of
+/// whatever `ep.max_packet` a (possibly malformed) device descriptor
+/// reported. Every chunk handed to `make_td` must be capped to this before
+/// `len - 1` is masked down to 11 bits, or the value silently wraps and the
+/// TD moves far fewer bytes than the caller believes it requested.
+const MAX_TD_LEN: usize = 2048;
+
 fn make_td(pid: u32, ep: &Endpoint, data_toggle: bool, len: u16, buffer: u32) -> Td {
     let mut cs = 3u32 << TD_CS_CERR_SHIFT; // C_ERR=3: hardware retries a NAK'd/erroring transaction up to 3 times on its own before giving up
     cs |= TD_CS_ACTIVE;
@@ -416,11 +424,19 @@ pub fn control_transfer(ep: &Endpoint, setup: &SetupPacket, buf: &mut [u8], data
         let mut toggle = true; // DATA1
         let mut offset = 0usize;
         while offset < buf.len() {
-            let chunk = (buf.len() - offset).min(mps);
+            let chunk = (buf.len() - offset).min(mps).min(MAX_TD_LEN);
             let pid = if data_in { PID_IN } else { PID_OUT };
             let td = make_td(pid, ep, toggle, chunk as u16, data_addr + offset as u32);
             match submit_and_wait(td, CONTROL_TIMEOUT_US) {
-                TdOutcome::Done(actual) => transferred += if data_in { actual as usize } else { chunk },
+                TdOutcome::Done(actual) => {
+                    let actual = actual as usize;
+                    // A short OUT means fewer bytes actually reached the
+                    // device than we told the caller; don't silently claim
+                    // the full chunk was sent (see MAX_TD_LEN's doc comment
+                    // for how this used to happen with an oversized chunk).
+                    if !data_in && actual != chunk { return Err(()); }
+                    transferred += if data_in { actual } else { chunk };
+                }
                 _ => return Err(()),
             }
             toggle = !toggle;
@@ -493,13 +509,17 @@ pub fn bulk_transfer(
     let mut transferred = 0usize;
     let mut offset = 0usize;
     while offset < buf.len() {
-        let chunk = (buf.len() - offset).min(mps);
+        let chunk = (buf.len() - offset).min(mps).min(MAX_TD_LEN);
         let pid = if data_in { PID_IN } else { PID_OUT };
         let td = make_td(pid, ep, *toggle, chunk as u16, base_addr + offset as u32);
         match submit_and_wait(td, timeout_us) {
             TdOutcome::Done(actual) => {
                 *toggle = !*toggle;
                 let actual = actual as usize;
+                // A short OUT means fewer bytes actually reached the device
+                // than we told the caller; don't silently advance past data
+                // that was never really sent (see MAX_TD_LEN's doc comment).
+                if !data_in && actual != chunk { return Err(()); }
                 transferred += if data_in { actual } else { chunk };
                 offset += chunk;
                 if data_in && actual < chunk {

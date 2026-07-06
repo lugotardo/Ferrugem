@@ -121,8 +121,8 @@ fn execute(line: &str, s: &mut State) {
         "run"    => cmd_run(parts.next()),
         "kill"   => cmd_kill(parts.next()),
         "diskinfo"  => cmd_diskinfo(),
-        "diskread"  => cmd_diskread(parts.next()),
-        "diskwrite" => cmd_diskwrite(parts.next(), line),
+        "diskread"  => cmd_diskread(parts.next(), s),
+        "diskwrite" => cmd_diskwrite(parts.next(), line, s),
         "halt" | "exit" | "poweroff" | "shutdown" => cmd_halt(),
         ""       => {}
         other    => { print_str("unknown command: "); print_str(other); print_str("\n"); }
@@ -237,10 +237,14 @@ fn cmd_ls(first: Option<&str>, second: Option<&str>, s: &State) {
         print_str("\n");
     });
 
+    // `list_dir`'s callback never fires for an empty directory either, so
+    // "no children were printed" alone can't tell that apart from `path`
+    // being a plain file — check is_dir() to pick the right fallback.
     if !found {
-        match crate::fs::resolve(path, s.cwd) {
-            None => { print_str("ls: "); print_str(path); print_str(": no such file\n"); }
-            Some(_) => { print_str(path); print_str("\n"); }
+        match crate::fs::is_dir(path, s.cwd) {
+            None            => { print_str("ls: "); print_str(path); print_str(": no such file\n"); }
+            Some(true)      => {} // empty directory: nothing to print
+            Some(false)     => { print_str(path); print_str("\n"); }
         }
     }
 }
@@ -669,19 +673,47 @@ fn cmd_diskinfo() {
     }
 }
 
-fn cmd_diskread(arg: Option<&str>) {
+/// Raw block access touches hardware directly, bypassing all filesystem
+/// permission checks — restrict it to root, same as chown.
+fn require_root(s: &State, cmd: &str) -> bool {
+    if s.uid != 0 {
+        print_str(cmd); print_str(": permission denied (root only)\n");
+        return false;
+    }
+    true
+}
+
+/// Validates `lba` against the device's reported block count so a stray
+/// digit (or overflowed parse) can't hit a sector outside the disk.
+fn check_lba(index: usize, lba: u32, cmd: &str) -> bool {
+    match disk_backend::block_count(index) {
+        Some(blocks) if lba < blocks => true,
+        Some(blocks) => {
+            print_str(cmd); print_str(": lba "); print_u64(lba as u64);
+            print_str(" out of range (device has "); print_u64(blocks as u64);
+            print_str(" blocks)\n");
+            false
+        }
+        None => { print_str(cmd); print_str(": unable to query device size\n"); false }
+    }
+}
+
+fn cmd_diskread(arg: Option<&str>, s: &State) {
     if !disk_backend::SUPPORTED {
         print_str("diskread: USB mass storage is only supported on x86_64 and Raspberry Pi 3\n");
         return;
     }
+    if !require_root(s, "diskread") { return; }
     let lba = match arg.and_then(parse_decimal) {
-        Some(n) => n as u32,
+        Some(n) if n <= u32::MAX as u64 => n as u32,
+        Some(_) => { print_str("diskread: lba out of range\n"); return; }
         None => { print_str("usage: diskread <lba>\n"); return; }
     };
     if disk_backend::count() == 0 {
         print_str("diskread: no USB mass storage device attached\n");
         return;
     }
+    if !check_lba(0, lba, "diskread") { return; }
     let mut buf = [0u8; 512];
     match disk_backend::read_block(0, lba, &mut buf) {
         Ok(()) => print_hex_dump(&buf[..64]),
@@ -689,19 +721,22 @@ fn cmd_diskread(arg: Option<&str>) {
     }
 }
 
-fn cmd_diskwrite(lba_arg: Option<&str>, line: &str) {
+fn cmd_diskwrite(lba_arg: Option<&str>, line: &str, s: &State) {
     if !disk_backend::SUPPORTED {
         print_str("diskwrite: USB mass storage is only supported on x86_64 and Raspberry Pi 3\n");
         return;
     }
+    if !require_root(s, "diskwrite") { return; }
     let lba = match lba_arg.and_then(parse_decimal) {
-        Some(n) => n as u32,
+        Some(n) if n <= u32::MAX as u64 => n as u32,
+        Some(_) => { print_str("diskwrite: lba out of range\n"); return; }
         None => { print_str("usage: diskwrite <lba> <text>\n"); return; }
     };
     if disk_backend::count() == 0 {
         print_str("diskwrite: no USB mass storage device attached\n");
         return;
     }
+    if !check_lba(0, lba, "diskwrite") { return; }
     let text = skip_words(line, 2);
     let mut buf = [0u8; 512];
     let tbytes = text.as_bytes();
@@ -777,20 +812,37 @@ fn read_key() -> Key {
         b'\n' | b'\r'        => Key::Enter,
         b'\x08' | 0x7F       => Key::Backspace,
         b'\x03'              => Key::Interrupt, // Ctrl+C
-        b'\x1b' => {
-            match read_char_timeout(200_000) {
-                Some(b'[') => {}
-                _          => return Key::Esc,
-            }
-            match read_char_timeout(200_000) {
+        b'\x1b' => match read_char_timeout(200_000) {
+            Some(b'[') => match read_char_timeout(200_000) {
                 Some(b'A') => Key::Up,
                 Some(b'B') => Key::Down,
                 Some(b'C') => Key::Right,
                 Some(b'D') => Key::Left,
-                _          => Key::Esc,
-            }
-        }
+                // Numeric CSI sequence this shell doesn't otherwise handle
+                // (Insert/Delete/PageUp/PageDown/F5-F12/...): drain the rest
+                // of it so its bytes don't leak into the next read_key()
+                // call as literal characters typed into the command line.
+                Some(b2) if (0x30..=0x3F).contains(&b2) => { drain_csi_tail(); Key::Esc }
+                _ => Key::Esc,
+            },
+            // SS3 sequence (F1-F4: `ESC O <final byte>`) — consume the
+            // final byte too, same leak-prevention reason as above.
+            Some(b'O') => { read_char_timeout(200_000); Key::Esc }
+            _ => Key::Esc,
+        },
         b => Key::Char(b),
+    }
+}
+
+/// Consume the remaining parameter/intermediate bytes (0x30-0x3F) of a CSI
+/// sequence up to and including its final byte (0x40-0x7E), or until the
+/// read times out — see `read_key`'s CSI branch.
+fn drain_csi_tail() {
+    loop {
+        match read_char_timeout(200_000) {
+            Some(b) if (0x30..=0x3F).contains(&b) => continue,
+            _ => return,
+        }
     }
 }
 
@@ -998,15 +1050,23 @@ fn print_hex_byte(b: u8) {
 }
 
 fn print_u64_padded(n: u64, width: usize) {
-    let mut buf = [b' '; 20];
-    if n == 0 {
-        buf[width - 1] = b'0';
-    } else {
-        let mut i = width;
-        let mut v = n;
-        while v > 0 && i > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
+    // Right-align into a `width`-character field, but never truncate: if
+    // `n` needs more digits than `width`, the field grows instead of
+    // silently dropping high-order digits (which used to make e.g. a
+    // 1,000,000+ byte file size print as a smaller, wrong-looking number).
+    let mut buf = [b'0'; 20]; // 20 = u64::MAX's decimal digit count
+    let mut i = buf.len();
+    let mut v = n;
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 { break; }
     }
-    if let Ok(s) = core::str::from_utf8(&buf[..width]) { print_str(s); }
+    let digits = buf.len() - i;
+    let start = if digits >= width { i } else { buf.len() - width };
+    for b in &mut buf[start..i.max(start)] { *b = b' '; }
+    if let Ok(s) = core::str::from_utf8(&buf[start..]) { print_str(s); }
 }
 
 // ── arch I/O ──────────────────────────────────────────────────────────────────

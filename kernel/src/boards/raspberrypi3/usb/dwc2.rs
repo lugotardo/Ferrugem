@@ -429,13 +429,22 @@ pub type Result<T> = core::result::Result<T, ()>;
 
 fn configure_channel(
     chan: usize, ep: &Endpoint, eptype: u32, dir_in: bool, pid: u32, xfer_size: u32, dma_addr: usize,
-) {
+) -> Result<()> {
     // `ep.max_packet` before enumeration completes comes straight from a
     // device-reported descriptor byte (bMaxPacketSize0) - a malformed or
     // not-yet-actually-transferred response reading back as 0 must never
     // crash the host via a divide-by-zero here.
     let mps = (ep.max_packet as usize).max(1);
     let pktcnt = if xfer_size == 0 { 1 } else { (xfer_size as usize).div_ceil(mps) as u32 };
+    // HCTSIZ's PktCnt field is only 10 bits wide (max 1023). A tiny/bogus
+    // `ep.max_packet` (device-reported, not otherwise validated at this
+    // layer) combined with a large `xfer_size` can drive `pktcnt` past
+    // that — masking it would silently submit a wrong-sized transfer, and
+    // shifting the unmasked value into HCTSIZ would instead corrupt the
+    // PID field packed into the same register write, so refuse outright.
+    if pktcnt > 0x3FF {
+        return Err(());
+    }
 
     // We poll HCINT directly rather than relying on an actual interrupt, but
     // unmask everything here anyway (see the comment on GAHBCFG/GINTMSK/
@@ -468,6 +477,7 @@ fn configure_channel(
 
     write(hctsiz(chan), (pid << 29) | (pktcnt << 19) | (xfer_size & 0x7FFFF));
     write(hcdma(chan), dma_addr as u32);
+    Ok(())
 }
 
 /// Set once the first `HCINT_XACTERR` register dump has fired (see
@@ -635,7 +645,7 @@ pub fn control_transfer(
     setup_dma.0[..8].copy_from_slice(&setup.as_bytes());
     let setup_addr = setup_dma.0.as_ptr() as usize;
     clean_range(setup_addr, 8);
-    configure_channel(CHAN, ep, EPTYPE_CONTROL, false, PID_SETUP, 8, setup_addr);
+    configure_channel(CHAN, ep, EPTYPE_CONTROL, false, PID_SETUP, 8, setup_addr)?;
     run_channel(CHAN, 10, "SETUP")?;
 
     // ── DATA stage (optional) ──
@@ -655,7 +665,7 @@ pub fn control_transfer(
             // been delivered at all") was actually seeing: not a length
             // problem, a stale-dirty-cache-line problem.
             clean_range(dma_addr, buf.len());
-            configure_channel(CHAN, ep, EPTYPE_CONTROL, true, PID_DATA1, buf.len() as u32, dma_addr);
+            configure_channel(CHAN, ep, EPTYPE_CONTROL, true, PID_DATA1, buf.len() as u32, dma_addr)?;
             run_channel(CHAN, 20, "DATAIN")?;
             // Every descriptor this driver reads is requested at an exact,
             // expected length, so treat XFERCOMPL as "got all of it" rather
@@ -667,7 +677,7 @@ pub fn control_transfer(
         } else {
             data_dma.0[..buf.len()].copy_from_slice(buf);
             clean_range(dma_addr, buf.len());
-            configure_channel(CHAN, ep, EPTYPE_CONTROL, false, PID_DATA1, buf.len() as u32, dma_addr);
+            configure_channel(CHAN, ep, EPTYPE_CONTROL, false, PID_DATA1, buf.len() as u32, dma_addr)?;
             run_channel(CHAN, 20, "DATAOUT")?;
             transferred = buf.len();
         }
@@ -675,7 +685,7 @@ pub fn control_transfer(
 
     // ── STATUS stage (opposite direction of the data stage, always DATA1, zero length) ──
     let status_in = buf.is_empty() || !data_in;
-    configure_channel(CHAN, ep, EPTYPE_CONTROL, status_in, PID_DATA1, 0, 0);
+    configure_channel(CHAN, ep, EPTYPE_CONTROL, status_in, PID_DATA1, 0, 0)?;
     run_channel(CHAN, 10, "STATUS")?;
 
     Ok(transferred)
@@ -706,7 +716,7 @@ pub fn interrupt_in_poll(ep: &Endpoint, toggle: &mut bool, buf: &mut [u8]) -> Re
     // real report back to zero after the transfer already completed.
     clean_range(dma_addr, buf.len());
     let pid = if *toggle { PID_DATA1 } else { PID_DATA0 };
-    configure_channel(CHAN, ep, EPTYPE_INTERRUPT, true, pid, buf.len() as u32, dma_addr);
+    configure_channel(CHAN, ep, EPTYPE_INTERRUPT, true, pid, buf.len() as u32, dma_addr)?;
 
     // Same forced 0->1 edge as `run_channel` (see its comment) - this
     // channel is reused across every poll call, so a previous call's halt
@@ -780,14 +790,14 @@ pub fn bulk_transfer(ep: &Endpoint, toggle: &mut bool, buf: &mut [u8], data_in: 
 
     if data_in {
         clean_range(dma_addr, buf.len());
-        configure_channel(CHAN, ep, EPTYPE_BULK, true, pid, buf.len() as u32, dma_addr);
+        configure_channel(CHAN, ep, EPTYPE_BULK, true, pid, buf.len() as u32, dma_addr)?;
         run_channel(CHAN, 20, "BULKIN")?;
         invalidate_range(dma_addr, buf.len());
         buf.copy_from_slice(&dma.0[..buf.len()]);
     } else {
         dma.0[..buf.len()].copy_from_slice(buf);
         clean_range(dma_addr, buf.len());
-        configure_channel(CHAN, ep, EPTYPE_BULK, false, pid, buf.len() as u32, dma_addr);
+        configure_channel(CHAN, ep, EPTYPE_BULK, false, pid, buf.len() as u32, dma_addr)?;
         run_channel(CHAN, 20, "BULKOUT")?;
     }
 

@@ -13,8 +13,19 @@ fn main() {
         _ => {}
     }
 
-    emit_linker_script(dir);
+    emit_linker_script(linker_dir(&target, dir));
     emit_git_hash();
+}
+
+/// Directory holding the active board's linker script. Usually the same as
+/// `board_dir`, except x86_64: `qemu_pc` and `virtualbox` shared one
+/// byte-for-byte identical `linker.ld` (same as their `console.rs`/
+/// `multiboot.rs`/`pic.rs`), since de-duplicated into `pc_common`.
+fn linker_dir<'a>(target_arch: &str, dir: &'a str) -> &'a str {
+    match target_arch {
+        "x86_64" => "src/boards/pc_common",
+        _ => dir,
+    }
 }
 
 /// Directory holding the active board's boot glue + linker script.

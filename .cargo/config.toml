@@ -5,6 +5,10 @@ target = "x86_64-unknown-none"
 [unstable]
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
+# Without this, `cargo test` rebuilds core/alloc with the default unwind
+# panic strategy for the test binary (the profiles above force panic=abort),
+# and linking both together fails with "duplicate lang item ... sized".
+panic-abort-tests = true
 
 # Per-board linker scripts are selected by kernel/build.rs (rustflags here
 # are keyed by target triple only, so they can't vary by the board-* Cargo
@@ -15,3 +19,7 @@ rustflags = [
     "-C", "code-model=kernel",
     "-C", "relocation-model=static",
 ]
+# Only used by `cargo test` (nothing else runs this target's binary directly,
+# see Makefile). Boots the test binary in QEMU and translates its
+# isa-debug-exit code back into a pass/fail exit status for cargo.
+runner = "kernel/scripts/qemu-test-runner.sh"

@@ -4,10 +4,14 @@ version = "0.0.1"
 edition = "2024"
 
 [[bin]]
-name    = "kernel"
-path    = "src/main.rs"
-test    = false
-bench   = false
+name  = "kernel"
+path  = "src/main.rs"
+# `cargo test` compiles this same binary with rustc's `--test` flag, which is
+# what activates `#![test_runner]`/`#![reexport_test_harness_main]` in
+# main.rs (see src/testing.rs) — that's the in-kernel harness replacing
+# libtest (which needs std), so the default `harness = true` is kept.
+test  = true
+bench = false
 
 [dependencies]
 
@@ -27,10 +31,3 @@ board-virtualbox         = [] # x86_64: GRUB ISO / VirtualBox
 board-qemu-virt-riscv64  = [] # riscv64: QEMU `virt`
 board-qemu-virt-aarch64  = [] # aarch64: QEMU `virt`
 board-raspberrypi3       = [] # aarch64: Raspberry Pi 3 (BCM2837)
-
-[package.metadata.bootimage]
-test-args = [
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-serial", "stdio",
-    "-display", "none"
-]

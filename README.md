@@ -72,7 +72,7 @@ guaranteed to work if no HDMI display is attached.
 
 On real hardware, boot also requests a 1024x768x32 HDMI framebuffer from
 firmware over the VideoCore mailbox (`boards::raspberrypi3::{mailbox,
-framebuffer}`) and mirrors every console byte onto it with a small
+hdmi}`) and mirrors every console byte onto it with a small
 hand-drawn 5x7 bitmap font (`font5x7.rs`, original artwork for this
 project, not copied from any existing font). This is best-effort and purely
 a visual mirror: if no display is attached, firmware refuses the request, or
@@ -123,8 +123,12 @@ BSP, not touching the generic kernel.
 | RISC-V 64 | Active | `qemu-virt` (default) |
 | ARM64 (AArch64) | Active | `qemu-virt` (default), `raspberrypi3` (BCM2837, day-to-day tested via QEMU's `raspi3b` machine, prepared to boot on real Raspberry Pi 3 B hardware, see below) |
 
----
+Driver-level details (USB stacks, console, etc.) and their own change
+history live in a `README.md` next to each driver's source, e.g.
+[`kernel/src/drivers/usb/`](kernel/src/drivers/usb/README.md) and
+[`kernel/src/boards/raspberrypi3/usb/`](kernel/src/boards/raspberrypi3/usb/README.md).
 
+---
 
 ## Project Philosophy
 

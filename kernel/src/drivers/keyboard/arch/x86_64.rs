@@ -56,14 +56,29 @@ pub fn read_byte() -> Option<u8> {
 }
 
 /// Applies any pending Shift+PageUp(-1)/PageDown(+1) scrollback request
-/// (see `KeyboardState::take_scroll`), PS/2 first since `handle_irq` already
-/// decoded it synchronously, USB HID second (lazily polled, same as
-/// `crate::drivers::usb::take_key`). Piggybacking on `read_byte` - the only
-/// per-iteration check in the shell's stdin read loop (`syscall::sys_read`)
-/// - means this needs no separate timer or IRQ hook to stay responsive.
+/// (see `KeyboardState::take_scroll`). Piggybacking on `read_byte` - the
+/// only per-iteration check in the shell's stdin read loop
+/// (`syscall::sys_read`) - means this needs no separate timer or IRQ hook to
+/// stay responsive.
+///
+/// Drains *both* transports unconditionally, not `ps2.take_scroll().or_else
+/// (usb::take_scroll)`: PS/2 and USB HID keep independent `KeyboardState`s
+/// (see the module doc comment - "the same state" is aspirational, not
+/// actual), and under QEMU's default `qemu-pc` flags (chipset PS/2 *and*
+/// `-device usb-kbd` both live at once, see `Makefile`) a single physical
+/// keypress reaches both and gets decoded twice. `or_else` only calls
+/// `usb::take_scroll` when PS/2 came back empty, so a duplicate sitting in
+/// the USB side survives to fire on a *later*, unrelated call - a real
+/// keypress could scroll one page now and a phantom second page moments
+/// later. Calling both every time and folding the results with `or`
+/// discards that duplicate in the same tick it arrived, at the cost of
+/// coalescing two genuinely distinct simultaneous scroll requests (from two
+/// different physical keyboards) into one - an acceptable trade for a
+/// feature that's just "one page more" either way.
 fn check_scroll() {
-    let dir = unsafe { STATE.take_scroll() }.or_else(crate::drivers::usb::take_scroll);
-    if let Some(dir) = dir {
+    let ps2_dir = unsafe { STATE.take_scroll() };
+    let usb_dir = crate::drivers::usb::take_scroll();
+    if let Some(dir) = ps2_dir.or(usb_dir) {
         crate::boards::current::console::scroll_view(dir);
     }
 }

@@ -178,6 +178,18 @@ pub fn detach(hub_addr: u8, hub_port: u8) {
                 *slot = None;
             }
         }
+        // Keep occupied slots contiguous at the front: `device_count()` counts
+        // them, but `block_count`/`read_block`/`write_block` index the array
+        // positionally, so a hole left by detaching a lower-numbered device
+        // would otherwise make a still-attached higher-numbered device
+        // uncountable/unreachable by index.
+        let mut write = 0;
+        for read in 0..MAX_DEVICES {
+            if DEVICES[read].is_some() {
+                if write != read { DEVICES.swap(write, read); }
+                write += 1;
+            }
+        }
     }
 }
 

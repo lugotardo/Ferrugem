@@ -40,6 +40,7 @@ pub fn init() {
     let b = &mut msg.0;
     let mut i = 2usize;
 
+    let phys_wh = i;
     b[i] = TAG_SET_PHYS_WH; b[i + 1] = 8; b[i + 2] = 0; b[i + 3] = WIDTH; b[i + 4] = HEIGHT;
     i += 5;
     b[i] = TAG_SET_VIRT_WH; b[i + 1] = 8; b[i + 2] = 0; b[i + 3] = WIDTH; b[i + 4] = HEIGHT;
@@ -66,15 +67,30 @@ pub fn init() {
         return; // no display / firmware refused / mailbox not implemented (QEMU)
     }
 
+    // Firmware overwrites these same words with what it actually granted,
+    // which can differ from the WIDTH/HEIGHT requested above (clamped mode,
+    // no display attached, ...). Using the stale request constants instead
+    // of reading these back would let fbconsole's clear_screen/scroll write
+    // past the buffer firmware actually allocated.
+    let width = b[phys_wh + 3];
+    let height = b[phys_wh + 4];
     let bus_addr = b[alloc + 3];
     let fb_size = b[alloc + 4];
     let pitch = b[pitch_tag + 3];
-    if bus_addr == 0 || fb_size == 0 || pitch == 0 {
+    if bus_addr == 0 || fb_size == 0 || pitch == 0 || width == 0 || height == 0 {
+        return;
+    }
+    // Sanity-check the reported geometry against the buffer size before
+    // trusting it: a malformed or inconsistent response must not be handed
+    // to fbconsole, whose bounds checks assume pitch*height <= fb_size.
+    let bytes_per_pixel = DEPTH / 8;
+    if pitch < width * bytes_per_pixel || (pitch as u64) * (height as u64) > fb_size as u64 {
         return;
     }
 
     let phys = mailbox::bus_to_phys(bus_addr);
+    crate::memory::bitmap::reserve_range(phys, fb_size as usize);
     crate::arch::aarch64::paging::map_uncached(phys, fb_size as usize);
 
-    fbconsole::init(phys, WIDTH, HEIGHT, pitch);
+    fbconsole::init(phys, width, height, pitch);
 }

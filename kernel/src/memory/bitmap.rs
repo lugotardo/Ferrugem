@@ -129,6 +129,23 @@ pub fn free_frames(first: usize, n: usize) {
     }
 }
 
+/// Reserve every 4 KiB frame overlapping `[addr, addr+size)` so the page
+/// allocator never hands them back out. For hardware buffers a board only
+/// discovers *after* `init_from_mmap` already ran and started handing out
+/// frames — e.g. the RPi3 VideoCore framebuffer, whose address/size are
+/// only known once the GPU responds to the mailbox request — without this,
+/// `alloc_pages` could later allocate the same physical memory to the heap
+/// or a user page, corrupting whichever one loses the race.
+pub fn reserve_range(addr: usize, size: usize) {
+    if size == 0 { return; }
+    unsafe {
+        if addr < MEM_BASE { return; }
+        let start = (addr - MEM_BASE) / 4096;
+        let end = ((addr - MEM_BASE + size + 4095) / 4096).min(TOTAL_FRAMES);
+        for f in start..end { mark_used(f); }
+    }
+}
+
 /// Convert frame index → physical address.
 pub fn frame_to_addr(frame: usize) -> usize {
     unsafe { MEM_BASE + frame * 4096 }

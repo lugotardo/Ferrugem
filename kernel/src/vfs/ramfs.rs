@@ -122,6 +122,19 @@ impl RamFs {
         bits & op != 0
     }
 
+    /// Unix sticky-directory removal rule: an entry inside `parent` may be
+    /// removed by root, by the entry's own owner, or — only when `parent`'s
+    /// sticky bit (mode & 0o1000) is *not* set — by anyone with write access
+    /// to `parent`. Without this, any world-writable directory (e.g. /tmp,
+    /// mode 0o777) would let any user delete files they don't own.
+    fn can_delete(&self, parent: usize, target_idx: usize, uid: u16, gid: u16) -> bool {
+        if uid == 0 { return true; }
+        if self.inodes[target_idx].uid == uid { return true; }
+        if !self.perm(parent, uid, gid, 2) { return false; }
+        let sticky = self.inodes[parent].mode & 0o1000 != 0;
+        !sticky || self.inodes[parent].uid == uid
+    }
+
     // ── write / read ─────────────────────────────────────────────────────────
 
     pub fn write(&mut self, path: &str, cwd: usize, data: &[u8], uid: u16, gid: u16) -> bool {
@@ -179,7 +192,7 @@ impl RamFs {
         self.inodes[i].parent = parent;
         self.inodes[i].uid    = uid;
         self.inodes[i].gid    = gid;
-        self.inodes[i].mode   = mode & 0o777;
+        self.inodes[i].mode   = mode & 0o1777;
         self.inodes[i].set_name(name);
         true
     }
@@ -194,7 +207,7 @@ impl RamFs {
             }
         }
         let parent = self.inodes[idx].parent;
-        if !self.perm(parent, uid, gid, 2) { return false; }
+        if !self.can_delete(parent, idx, uid, gid) { return false; }
         self.inodes[idx].used = false;
         true
     }
@@ -222,9 +235,7 @@ impl RamFs {
         if idx == 0 { return false; }
         if self.inodes[idx].kind == InodeKind::Dir { return false; }
         let parent = self.inodes[idx].parent;
-        if uid != 0 && self.inodes[idx].uid != uid && !self.perm(parent, uid, gid, 2) {
-            return false;
-        }
+        if !self.can_delete(parent, idx, uid, gid) { return false; }
         self.inodes[idx].used = false;
         true
     }
@@ -234,7 +245,7 @@ impl RamFs {
     pub fn chmod(&mut self, path: &str, cwd: usize, mode: u16, caller_uid: u16) -> bool {
         let idx = match self.resolve(path, cwd) { Some(i) => i, None => return false };
         if caller_uid != 0 && self.inodes[idx].uid != caller_uid { return false; }
-        self.inodes[idx].mode = mode & 0o777;
+        self.inodes[idx].mode = mode & 0o1777;
         true
     }
 
@@ -373,6 +384,43 @@ impl RamFs {
         self.inodes[src_idx].parent = dst_parent;
         self.inodes[src_idx].set_name(dst_name);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `RamFs` is ~262 KiB (MAX_INODES * MAX_DATA), same as production's
+    // `fs::ROOT_FS` — too big for the small boot stack, so each test backs
+    // it with its own `static mut` instead of a stack local.
+
+    #[test_case]
+    fn write_then_read_roundtrip() {
+        static mut FS: RamFs = RamFs::new();
+        let fs = unsafe { &mut FS };
+        fs.init_root();
+        assert!(fs.write("/hello.txt", 0, b"hi", 0, 0));
+        let data = fs.read_at("/hello.txt", 0, 0, 0).expect("file should exist after write");
+        assert_eq!(data, b"hi");
+    }
+
+    #[test_case]
+    fn resolve_missing_path_is_none() {
+        static mut FS: RamFs = RamFs::new();
+        let fs = unsafe { &mut FS };
+        fs.init_root();
+        assert_eq!(fs.resolve("/nope", 0), None);
+    }
+
+    #[test_case]
+    fn mkdir_then_write_inside_it() {
+        static mut FS: RamFs = RamFs::new();
+        let fs = unsafe { &mut FS };
+        fs.init_root();
+        assert!(fs.mkdir("/dir", 0, 0, 0, 0o755));
+        assert!(fs.write("/dir/file.txt", 0, b"x", 0, 0));
+        assert_eq!(fs.read_at("/dir/file.txt", 0, 0, 0), Some(&b"x"[..]));
     }
 }
 

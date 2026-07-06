@@ -4,9 +4,7 @@
 //! to COM1 (`console.rs`), 8259 PIC interrupt routing (`pic.rs`), and an e820
 //! memory map parsed from the Multiboot info structure (`multiboot.rs`).
 
-pub mod console;
-pub mod multiboot;
-pub mod pic;
+pub use crate::boards::pc_common::{console, multiboot, pic};
 
 /// Board bring-up: PIC remap/mask + VGA+COM1 console. Called from
 /// `arch::x86_64::early_init` before interrupts are enabled.

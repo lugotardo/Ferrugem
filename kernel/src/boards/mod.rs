@@ -11,6 +11,9 @@
 //! Populated incrementally as each ISA is migrated off hardcoded
 //! `target_arch` dispatch (see `doc/process` / project plan).
 
+#[cfg(all(target_arch = "x86_64", any(feature = "board-qemu-pc", feature = "board-virtualbox")))]
+pub mod pc_common;
+
 #[cfg(all(target_arch = "x86_64", feature = "board-qemu-pc"))]
 pub mod qemu_pc;
 #[cfg(all(target_arch = "x86_64", feature = "board-qemu-pc"))]

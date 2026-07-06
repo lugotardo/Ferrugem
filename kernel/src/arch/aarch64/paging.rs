@@ -55,22 +55,39 @@ pub fn init() {
             let l2_phys = core::ptr::addr_of!(l2.0) as u64;
             L1_TABLE.0[l1] = l2_phys | TABLE_VALID;
         }
+        // Ensure the page-table stores above are visible to the table walker
+        // before it's ever turned loose on them (ISB only orders instruction
+        // fetch/execution against system-register writes, it says nothing
+        // about when a prior normal-memory store becomes visible to another
+        // observer such as the MMU's translation table walker).
+        core::arch::asm!("dsb ishst", options(nostack));
 
         let mair: u64 = (0x44u64 << 16) | (0xFFu64 << 8) | 0x00u64; // idx2=Normal NC, idx1=Normal WB, idx0=Device-nGnRnE
         core::arch::asm!("msr mair_el1, {v}", v = in(reg) mair, options(nostack));
 
         // T0SZ=25 (39-bit VA), 4 KiB granule, inner shareable, WBWA, 32-bit PA.
+        // EPD1 (bit 23) = 1: disable TTBR1_EL1 walks — TTBR1_EL1 is never
+        // initialized (its reset value is architecturally UNKNOWN), and
+        // nothing in this Fase-1 kernel generates a high-half (bit 63 set)
+        // address, so a walk through it must never be attempted.
         let tcr: u64 = 25
             | (0b01 << 8)     // IRGN0 = WBWA
             | (0b01 << 10)    // ORGN0 = WBWA
             | (0b11 << 12)    // SH0   = inner shareable
             | (0b00 << 14)    // TG0   = 4 KiB granule
+            | (1u64 << 23)    // EPD1  = 1 (disable TTBR1 walks)
             | (0b000u64 << 32); // IPS = 32-bit PA (plenty for QEMU virt's <4 GiB layout)
         core::arch::asm!("msr tcr_el1, {v}", v = in(reg) tcr, options(nostack));
 
         let ttbr0 = core::ptr::addr_of!(L1_TABLE.0) as u64;
         core::arch::asm!("msr ttbr0_el1, {v}", v = in(reg) ttbr0, options(nostack));
         core::arch::asm!("isb", options(nostack));
+
+        // Clear any TLB entries a prior boot stage/firmware may have left
+        // behind — AArch64 gives no guarantee the TLB is clean at reset or
+        // across an EL transition, and this is the first time this table is
+        // ever active.
+        core::arch::asm!("tlbi vmalle1", "dsb ish", "isb", options(nostack));
 
         // Enable MMU (M) + data cache (C) + instruction cache (I).
         let mut sctlr: u64;

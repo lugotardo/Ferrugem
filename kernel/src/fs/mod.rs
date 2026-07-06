@@ -9,7 +9,7 @@ pub fn init() {
         ROOT_FS.init_root();
         ROOT_FS.mkdir("/etc",  0, 0, 0, 0o755);
         ROOT_FS.mkdir("/home", 0, 0, 0, 0o755);
-        ROOT_FS.mkdir("/tmp",  0, 0, 0, 0o777);
+        ROOT_FS.mkdir("/tmp",  0, 0, 0, 0o1777); // sticky bit: world-writable but no cross-user deletes
         ROOT_FS.write_file("/etc/hostname", 0, b"ferrugem\n",           0, 0);
         ROOT_FS.write_file("/etc/motd",     0, b"Welcome to Ferrugem!\n", 0, 0);
         ROOT_FS.mkdir("/home/ferrugem",  0, 1000, 1000, 0o755);

@@ -53,11 +53,23 @@ static mut PORT_DEVICE: [Option<(u8, Attached)>; 2] = [None; 2];
 /// just documents that intent rather than reusing an unrelated constant.
 const MAX_HUB_PORTS: usize = 8;
 
-fn alloc_addr() -> u8 {
+/// USB device addresses are a 7-bit field on the wire (`uhci::make_td`
+/// masks `dev_addr & 0x7F`); addresses are also never reclaimed on detach
+/// (see this module's doc comment on that accepted limitation), so without
+/// a cap, enough hot-plug cycles would eventually wrap `NEXT_ADDR` past 127
+/// and silently alias a fresh device onto an address already in use by
+/// another attached device — or, in a debug build, trip the `+= 1`
+/// overflow check once the counter reached 255. Returning `None` once
+/// addresses are exhausted fails that one enumeration attempt cleanly
+/// instead.
+fn alloc_addr() -> Option<u8> {
     unsafe {
+        if NEXT_ADDR > 127 {
+            return None;
+        }
         let a = NEXT_ADDR;
         NEXT_ADDR += 1;
-        a
+        Some(a)
     }
 }
 
@@ -199,7 +211,10 @@ fn bring_up_port(port: u8) {
     log_dec(port as u32);
     log(": device enabled\n");
 
-    let addr = alloc_addr();
+    let Some(addr) = alloc_addr() else {
+        log("usb:   out of USB device addresses, ignoring\n");
+        return;
+    };
     if let Some(kind) = bring_up_device(speed, addr) {
         unsafe { PORT_DEVICE[port as usize - 1] = Some((addr, kind)) };
     }
@@ -339,7 +354,11 @@ fn bring_up_hub_port(ep0: &Endpoint, port: u8, settle_ms: u32) {
         return;
     }
 
-    bring_up_device(hub_port_speed(status), alloc_addr());
+    let Some(addr) = alloc_addr() else {
+        log("usb:   out of USB device addresses, ignoring\n");
+        return;
+    };
+    bring_up_device(hub_port_speed(status), addr);
 }
 
 /// Walk a device's configuration descriptor looking for a HID
@@ -374,17 +393,27 @@ fn enumerate_as_hid_keyboard(ep0: Endpoint) -> Option<Endpoint> {
             break;
         }
         let dtype = cfg[i + 1];
-        if dtype == 4 && i + 9 <= total_len {
+        // `len >= 9`/`len >= 7` (the descriptor's own declared bLength, not
+        // just how much buffer remains) guards against a malformed short
+        // interface/endpoint descriptor causing these fields to actually be
+        // read out of the *next* descriptor's bytes instead.
+        if dtype == 4 && len >= 9 && i + 9 <= total_len {
             let class = cfg[i + 5];
             let subclass = cfg[i + 6];
             let proto = cfg[i + 7];
             in_keyboard_iface =
                 class == CLASS_HID && subclass == HID_SUBCLASS_BOOT && proto == HID_PROTOCOL_KEYBOARD;
-        } else if dtype == 5 && in_keyboard_iface && found_ep.is_none() && i + 7 <= total_len {
+        } else if dtype == 5 && in_keyboard_iface && found_ep.is_none() && len >= 7 && i + 7 <= total_len {
             let ep_addr = cfg[i + 2];
             let attrs = cfg[i + 3];
             let max_pkt = u16::from_le_bytes([cfg[i + 4], cfg[i + 5]]);
-            if ep_addr & 0x80 != 0 && attrs & 0x3 == 3 {
+            // Reject a device-reported wMaxPacketSize outside the legal
+            // range for this driver's Full/Low-speed-only UHCI topology (0
+            // would divide-by-zero further down the transfer path; 64 is
+            // the USB 2.0 ceiling for Full-speed interrupt/bulk endpoints)
+            // rather than trusting it unchecked into an `Endpoint` used to
+            // size DMA transfers.
+            if ep_addr & 0x80 != 0 && attrs & 0x3 == 3 && max_pkt >= 1 && max_pkt <= 64 {
                 found_ep = Some((ep_addr & 0x0F, max_pkt));
             }
         }
@@ -443,17 +472,23 @@ fn enumerate_as_msc(ep0: Endpoint) -> Option<(Endpoint, Endpoint)> {
             break;
         }
         let dtype = cfg[i + 1];
-        if dtype == 4 && i + 9 <= total_len {
+        // See `enumerate_as_hid_keyboard`'s matching comment: `len >= 9`/
+        // `len >= 7` guards the descriptor's own declared bLength, not just
+        // the remaining buffer size.
+        if dtype == 4 && len >= 9 && i + 9 <= total_len {
             let class = cfg[i + 5];
             let subclass = cfg[i + 6];
             let proto = cfg[i + 7];
             in_msc_iface =
                 class == CLASS_MSC && subclass == MSC_SUBCLASS_SCSI && proto == MSC_PROTOCOL_BULK_ONLY;
-        } else if dtype == 5 && in_msc_iface && i + 7 <= total_len {
+        } else if dtype == 5 && in_msc_iface && len >= 7 && i + 7 <= total_len {
             let ep_addr = cfg[i + 2];
             let attrs = cfg[i + 3];
             let max_pkt = u16::from_le_bytes([cfg[i + 4], cfg[i + 5]]);
-            if attrs & 0x3 == 0x2 {
+            // See `enumerate_as_hid_keyboard`'s matching comment on why an
+            // out-of-range wMaxPacketSize must be rejected here rather than
+            // trusted into an `Endpoint`.
+            if attrs & 0x3 == 0x2 && max_pkt >= 1 && max_pkt <= 64 {
                 // bulk transfer type (USB 2.0 table 9-13)
                 if ep_addr & 0x80 != 0 {
                     if bulk_in.is_none() { bulk_in = Some((ep_addr & 0x0F, max_pkt)); }

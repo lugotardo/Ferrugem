@@ -58,6 +58,11 @@ pub fn take_key() -> Option<u8> {
     hid::take_key()
 }
 
+pub fn take_scroll() -> Option<i8> {
+    maybe_poll_hotplug();
+    hid::take_scroll()
+}
+
 // ── mass storage ──────────────────────────────────────────────────────────
 // See the identical API in `drivers::usb` (x86_64) - same shape, different
 // board. **Compile-tested only** on this board, see `msc.rs`'s module doc

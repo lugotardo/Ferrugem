@@ -91,7 +91,7 @@ KERNEL8_IMG := kernel8.img
 
 INIT_ELF := userspace/init/target/x86_64-unknown-linux-musl/release/init
 
-.PHONY: all build run run-display run-vnc iso iso-virtualbox clean clippy fmt userspace x86 x86-display x86-vnc riscv riscv-display riscv-vnc aarch64 aarch64-display aarch64-vnc virtualbox raspberrypi3 raspberrypi3-img
+.PHONY: all build run run-display run-vnc iso iso-virtualbox clean clippy fmt userspace x86 x86-display x86-vnc riscv riscv-display riscv-vnc aarch64 aarch64-display aarch64-vnc virtualbox raspberrypi3 raspberrypi3-img test-x86
 
 all: build
 
@@ -153,6 +153,12 @@ x86-display:
 
 x86-vnc:
 	$(MAKE) ARCH=x86_64 run-vnc
+
+# In-kernel unit tests (see kernel/src/testing.rs). x86_64 only for now: pass/fail
+# is reported via QEMU's isa-debug-exit device, which the runner in
+# .cargo/config.toml (kernel/scripts/qemu-test-runner.sh) boots headlessly.
+test-x86: $(INIT_ELF)
+	cargo test --target x86_64-unknown-none -p kernel
 
 riscv:
 	$(MAKE) ARCH=riscv64 run
