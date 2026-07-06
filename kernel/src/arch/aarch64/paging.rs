@@ -88,7 +88,7 @@ pub fn kernel_page_table_phys() -> u64 {
 /// as Normal Non-cacheable and flush the TLB for that range.
 ///
 /// For hardware buffers whose physical address is only known at runtime —
-/// today, the sole caller is `boards::raspberrypi3::framebuffer`, whose
+/// today, the sole caller is `boards::raspberrypi3::hdmi`, whose
 /// VideoCore-allocated address can't be listed in the board's compile-time
 /// `MMIO_RANGES`. Non-cacheable (rather than Device) so ordinary
 /// `core::ptr::copy`/`write_bytes` can still be used on it: Device memory

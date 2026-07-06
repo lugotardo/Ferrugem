@@ -330,7 +330,7 @@ pub fn paging_init() {
 }
 
 /// Board bring-up that can only run once paging is active, e.g. the
-/// Raspberry Pi 3's VideoCore-mailbox framebuffer, whose physical address is
+/// Raspberry Pi 3's HDMI/VideoCore-mailbox framebuffer, whose physical address is
 /// decided by firmware at runtime and needs remapping via `paging::
 /// map_uncached`, which needs the identity map `paging_init` just built.
 /// The USB host stack doesn't strictly need paging up, but is grouped here
@@ -340,7 +340,7 @@ pub fn paging_init() {
 pub fn board_late_init() {
     #[cfg(all(target_arch = "aarch64", feature = "board-raspberrypi3"))]
     {
-        crate::boards::raspberrypi3::framebuffer::init();
+        crate::boards::raspberrypi3::hdmi::init();
         crate::boards::raspberrypi3::usb::init();
     }
 }

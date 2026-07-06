@@ -1,8 +1,9 @@
-//! VideoCore framebuffer bring-up, via the property-tag mailbox interface
-//! (`mailbox.rs`). Requests a fixed 1024x768x32 framebuffer, a VESA/CEA
-//! resolution essentially every HDMI display and TV accepts, rather than
-//! parsing EDID for the display's preferred mode, which needs a separate
-//! (and considerably more involved) mailbox tag.
+//! HDMI output bring-up: requests a VideoCore framebuffer over the
+//! property-tag mailbox interface (`mailbox.rs`) that firmware scans out to
+//! the physical HDMI port. Requests a fixed 1024x768x32 framebuffer, a
+//! VESA/CEA resolution essentially every HDMI display and TV accepts,
+//! rather than parsing EDID for the display's preferred mode, which needs a
+//! separate (and considerably more involved) mailbox tag.
 //!
 //! Entirely best-effort: no display attached, a firmware that refuses the
 //! request, or (as on QEMU's `raspi3b` machine, which doesn't implement

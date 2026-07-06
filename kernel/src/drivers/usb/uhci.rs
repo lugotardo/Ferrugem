@@ -440,6 +440,83 @@ pub fn control_transfer(ep: &Endpoint, setup: &SetupPacket, buf: &mut [u8], data
     }
 }
 
+/// Cap for a single bulk transfer's DMA buffer. Kept separate from
+/// `MAX_XFER` (control transfers / descriptors, 256 B) rather than just
+/// bumping that constant: `msc.rs` moves whole storage sectors (512 B) at
+/// once, and every existing `DmaBuf` local in this file would otherwise
+/// grow along with it for no reason. 4096 B covers one 4K page or eight
+/// 512 B sectors in a single transfer.
+pub const MAX_BULK_XFER: usize = 4096;
+
+#[repr(align(4))]
+struct BulkDmaBuf([u8; MAX_BULK_XFER]);
+
+/// Bulk data-stage transfer (no SETUP/STATUS stage, unlike
+/// `control_transfer`): moves `buf` in `ep.max_packet`-sized chunks, one TD
+/// at a time, same as `control_transfer`'s DATA stage loop.
+///
+/// Unlike a control transfer's data stage - which always starts at DATA1
+/// and only lives for the duration of one transfer - a bulk endpoint owns
+/// its data-toggle state for its entire lifetime, reset to DATA0 only by
+/// `SET_CONFIGURATION` (USB 2.0 §9.4.5, §5.8.5 for the general rule). The
+/// caller must thread the same `toggle` through every call for a given
+/// endpoint, exactly like `interrupt_in_poll`'s.
+///
+/// A short IN packet (actual length < requested chunk) ends the transfer
+/// early per USB 2.0 §5.8.3 - normal for the last packet of a
+/// not-evenly-divisible transfer (e.g. a 13-byte CSW), not an error.
+///
+/// `StillActive` (device kept NAK'ing until `timeout_us`) is treated as a
+/// hard error here, unlike `interrupt_in_poll`: there's no "nothing new to
+/// report yet" case for a command the caller is actively waiting on.
+pub fn bulk_transfer(
+    ep: &Endpoint,
+    toggle: &mut bool,
+    buf: &mut [u8],
+    data_in: bool,
+    timeout_us: u32,
+) -> Result<usize> {
+    if buf.len() > MAX_BULK_XFER {
+        return Err(());
+    }
+    if buf.is_empty() {
+        return Ok(0);
+    }
+
+    let mps = (ep.max_packet as usize).max(1);
+    let mut dma = BulkDmaBuf([0; MAX_BULK_XFER]);
+    if !data_in {
+        dma.0[..buf.len()].copy_from_slice(buf);
+    }
+    let base_addr = dma.0.as_ptr() as u32;
+
+    let mut transferred = 0usize;
+    let mut offset = 0usize;
+    while offset < buf.len() {
+        let chunk = (buf.len() - offset).min(mps);
+        let pid = if data_in { PID_IN } else { PID_OUT };
+        let td = make_td(pid, ep, *toggle, chunk as u16, base_addr + offset as u32);
+        match submit_and_wait(td, timeout_us) {
+            TdOutcome::Done(actual) => {
+                *toggle = !*toggle;
+                let actual = actual as usize;
+                transferred += if data_in { actual } else { chunk };
+                offset += chunk;
+                if data_in && actual < chunk {
+                    break;
+                }
+            }
+            _ => return Err(()),
+        }
+    }
+
+    if data_in {
+        let n = transferred.min(buf.len());
+        buf[..n].copy_from_slice(&dma.0[..n]);
+    }
+    Ok(transferred)
+}
+
 /// Single-shot interrupt IN poll: one attempt to read up to `buf.len()`
 /// bytes from `ep`'s interrupt endpoint. `toggle` is the caller-owned
 /// per-endpoint data toggle (reset to DATA0/`false` right after

@@ -39,7 +39,7 @@ pub fn print_byte(b: u8) {
         reg(UARTDR).write_volatile(b as u32);
     }
     // Mirror onto the HDMI framebuffer console, if `boards::raspberrypi3::
-    // framebuffer::init` (called later, from `arch::board_late_init` once
+    // hdmi::init` (called later, from `arch::board_late_init` once
     // paging is up) ever managed to get one from firmware. A no-op until
     // then, and forever on QEMU virt / no display attached.
     #[cfg(feature = "board-raspberrypi3")]

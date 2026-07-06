@@ -110,6 +110,19 @@ pub fn take_key() -> Option<u8> {
     }
 }
 
+/// Same lazy-poll pattern as `take_key`, for a pending Shift+PageUp/
+/// PageDown scrollback request (see `state::KeyboardState::take_scroll`)
+/// instead of a byte.
+pub fn take_scroll() -> Option<i8> {
+    unsafe {
+        if let Some(d) = STATE.take_scroll() {
+            return Some(d);
+        }
+        poll_all();
+        STATE.take_scroll()
+    }
+}
+
 fn poll_all() {
     unsafe {
         for slot in DEVICES.iter_mut() {

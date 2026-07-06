@@ -16,6 +16,7 @@
 mod dwc2;
 mod hub;
 pub mod hid;
+mod msc;
 mod protocol;
 
 /// Every `HOTPLUG_POLL_PERIOD` calls to `has_key`/`take_key`, also rescan
@@ -55,4 +56,30 @@ pub fn has_key() -> bool {
 pub fn take_key() -> Option<u8> {
     maybe_poll_hotplug();
     hid::take_key()
+}
+
+// ── mass storage ──────────────────────────────────────────────────────────
+// See the identical API in `drivers::usb` (x86_64) - same shape, different
+// board. **Compile-tested only** on this board, see `msc.rs`'s module doc
+// comment.
+
+pub fn disk_sector_size() -> usize {
+    msc::SECTOR_SIZE
+}
+
+pub fn disk_count() -> usize {
+    maybe_poll_hotplug();
+    msc::device_count()
+}
+
+pub fn disk_block_count(index: usize) -> Option<u32> {
+    msc::block_count(index)
+}
+
+pub fn disk_read_block(index: usize, lba: u32, buf: &mut [u8]) -> Result<(), ()> {
+    msc::read_block(index, lba, buf)
+}
+
+pub fn disk_write_block(index: usize, lba: u32, data: &[u8]) -> Result<(), ()> {
+    msc::write_block(index, lba, data)
 }

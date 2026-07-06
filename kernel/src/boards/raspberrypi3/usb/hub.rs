@@ -16,11 +16,14 @@
 
 use super::dwc2;
 use super::hid;
+use super::msc;
 use super::protocol::*;
 
 const MAX_PORTS: usize = 8;
 /// Matches `hid.rs`'s `MAX_DEVICES` - two views of the same limit.
 const MAX_KEYBOARDS: usize = 4;
+/// Matches `msc.rs`'s `MAX_DEVICES` - same reasoning as `MAX_KEYBOARDS`.
+const MAX_DISKS: usize = 4;
 
 static mut NEXT_ADDR: u8 = 1;
 
@@ -35,6 +38,8 @@ static mut ROOT_HUB: Option<RootHub> = None;
 /// Which of `MAX_KEYBOARDS` slots is attached where, so a hot-plug removal
 /// on a given hub/port can tell `hid.rs` exactly which device went away.
 static mut KEYBOARD_LOCATIONS: [Option<(u8, u8)>; MAX_KEYBOARDS] = [None; MAX_KEYBOARDS];
+/// Same bookkeeping as `KEYBOARD_LOCATIONS`, for Mass Storage devices.
+static mut DISK_LOCATIONS: [Option<(u8, u8)>; MAX_DISKS] = [None; MAX_DISKS];
 
 fn alloc_addr() -> u8 {
     unsafe {
@@ -184,6 +189,31 @@ fn remove_keyboard_at(hub_addr: u8, hub_port: u8) {
     hid::detach(hub_addr, hub_port);
 }
 
+fn add_disk(ep0: Endpoint, bulk_in: Endpoint, bulk_out: Endpoint) {
+    unsafe {
+        for loc in DISK_LOCATIONS.iter_mut() {
+            if loc.is_none() {
+                if msc::attach(ep0, bulk_in, bulk_out) {
+                    *loc = Some((bulk_in.hub_addr, bulk_in.hub_port));
+                }
+                return;
+            }
+        }
+    }
+    log("usb:   disk found but MAX_DISKS already attached, ignoring\n");
+}
+
+fn remove_disk_at(hub_addr: u8, hub_port: u8) {
+    unsafe {
+        for loc in DISK_LOCATIONS.iter_mut() {
+            if *loc == Some((hub_addr, hub_port)) {
+                *loc = None;
+            }
+        }
+    }
+    msc::detach(hub_addr, hub_port);
+}
+
 /// Entry point: enumerate whatever's on the root port (a Raspberry Pi 3
 /// always has the LAN9514 hub there) and recurse into it collecting every
 /// HID boot-protocol keyboard found. Called once at boot; see
@@ -220,6 +250,7 @@ pub fn poll_hotplug() {
         // change is a fresh connection or a disconnection: either way the
         // old device's address is no longer valid.
         remove_keyboard_at(ep0.dev_addr, port);
+        remove_disk_at(ep0.dev_addr, port);
 
         if status & 1 != 0 {
             log("usb:   hot-plug: port ");
@@ -315,6 +346,10 @@ fn bring_up_device(speed: Speed, hub_addr: u8, hub_port: u8, addr: u8) {
 
     if let Some(kbd_ep) = enumerate_as_hid_keyboard(ep0) {
         add_keyboard(ep0, kbd_ep);
+        return;
+    }
+    if let Some((bulk_in, bulk_out)) = enumerate_as_msc(ep0) {
+        add_disk(ep0, bulk_in, bulk_out);
     }
 }
 
@@ -455,4 +490,83 @@ fn enumerate_as_hid_keyboard(ep0: Endpoint) -> Option<Endpoint> {
         hub_addr: ep0.hub_addr,
         hub_port: ep0.hub_port,
     })
+}
+
+/// Walk a device's configuration descriptor looking for a Mass Storage /
+/// SCSI transparent / Bulk-Only Transport interface, and if found, its
+/// bulk IN and bulk OUT endpoints - see `drivers::usb::hub`'s
+/// `enumerate_as_msc` (x86_64/UHCI), the identical walk against a
+/// differently-shaped `Endpoint` (hub-routing fields included here).
+fn enumerate_as_msc(ep0: Endpoint) -> Option<(Endpoint, Endpoint)> {
+    let mut hdr = [0u8; 9];
+    if get_descriptor(&ep0, DESC_CONFIGURATION, 0, &mut hdr).is_err() {
+        return None;
+    }
+    let total_len = u16::from_le_bytes([hdr[2], hdr[3]]) as usize;
+    if total_len < 9 || total_len > 256 {
+        return None;
+    }
+
+    let mut cfg = [0u8; 256];
+    let cfg = &mut cfg[..total_len];
+    if get_descriptor(&ep0, DESC_CONFIGURATION, 0, cfg).is_err() {
+        return None;
+    }
+    let config_value = cfg[5];
+
+    let mut i = 0usize;
+    let mut in_msc_iface = false;
+    let mut bulk_in: Option<(u8, u16)> = None;
+    let mut bulk_out: Option<(u8, u16)> = None;
+
+    while i + 2 <= total_len {
+        let len = cfg[i] as usize;
+        if len == 0 {
+            break;
+        }
+        let dtype = cfg[i + 1];
+        if dtype == 4 && i + 9 <= total_len {
+            let class = cfg[i + 5];
+            let subclass = cfg[i + 6];
+            let proto = cfg[i + 7];
+            in_msc_iface =
+                class == CLASS_MSC && subclass == MSC_SUBCLASS_SCSI && proto == MSC_PROTOCOL_BULK_ONLY;
+        } else if dtype == 5 && in_msc_iface && i + 7 <= total_len {
+            let ep_addr = cfg[i + 2];
+            let attrs = cfg[i + 3];
+            let max_pkt = u16::from_le_bytes([cfg[i + 4], cfg[i + 5]]);
+            if attrs & 0x3 == 0x2 {
+                // bulk transfer type (USB 2.0 table 9-13)
+                if ep_addr & 0x80 != 0 {
+                    if bulk_in.is_none() { bulk_in = Some((ep_addr & 0x0F, max_pkt)); }
+                } else if bulk_out.is_none() {
+                    bulk_out = Some((ep_addr & 0x0F, max_pkt));
+                }
+            }
+        }
+        i += len;
+    }
+
+    let (in_num, in_mps) = bulk_in?;
+    let (out_num, out_mps) = bulk_out?;
+
+    if set_configuration(&ep0, config_value).is_err() {
+        log("usb:   SET_CONFIGURATION failed (MSC)\n");
+        return None;
+    }
+
+    log("usb:   MSC bulk-only interface found: addr=");
+    log_dec(ep0.dev_addr as u32);
+    log("\n");
+
+    Some((
+        Endpoint {
+            dev_addr: ep0.dev_addr, ep_num: in_num, max_packet: in_mps,
+            speed: ep0.speed, hub_addr: ep0.hub_addr, hub_port: ep0.hub_port,
+        },
+        Endpoint {
+            dev_addr: ep0.dev_addr, ep_num: out_num, max_packet: out_mps,
+            speed: ep0.speed, hub_addr: ep0.hub_addr, hub_port: ep0.hub_port,
+        },
+    ))
 }

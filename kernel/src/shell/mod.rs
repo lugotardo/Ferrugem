@@ -120,6 +120,9 @@ fn execute(line: &str, s: &mut State) {
         "spawn"  => cmd_spawn(parts.next()),
         "run"    => cmd_run(parts.next()),
         "kill"   => cmd_kill(parts.next()),
+        "diskinfo"  => cmd_diskinfo(),
+        "diskread"  => cmd_diskread(parts.next()),
+        "diskwrite" => cmd_diskwrite(parts.next(), line),
         "halt" | "exit" | "poweroff" | "shutdown" => cmd_halt(),
         ""       => {}
         other    => { print_str("unknown command: "); print_str(other); print_str("\n"); }
@@ -168,6 +171,10 @@ fn cmd_help() {
     print_str("  run <path>             load and run an ELF64 binary from VFS\n");
     print_str("  run user               start the built-in demo user program\n");
     print_str("  kill <slot>            terminate task by slot number\n");
+    print_str("\nStorage (USB mass storage, x86_64 and Raspberry Pi 3 only):\n");
+    print_str("  diskinfo               list attached USB disks and their capacity\n");
+    print_str("  diskread <lba>         read one block, print its first 64 bytes\n");
+    print_str("  diskwrite <lba> <text> write text (zero-padded) into one block\n");
     print_str("\nHistory: up/down arrows navigate command history\n");
 }
 
@@ -605,6 +612,107 @@ fn run_elf_from_vfs(path: &str) {
     }
 }
 
+// ── storage (USB mass storage) ────────────────────────────────────────────
+//
+// Two boards implement USB mass storage today (x86_64/UHCI and Raspberry
+// Pi 3/DWC2, see `drivers::usb`/`boards::raspberrypi3::usb`), each behind
+// its own module path; `disk_backend` picks the right one at compile time
+// so `cmd_diskinfo`/`cmd_diskread`/`cmd_diskwrite` below are written once
+// instead of once per board.
+
+#[cfg(target_arch = "x86_64")]
+mod disk_backend {
+    pub const SUPPORTED: bool = true;
+    pub fn count() -> usize { crate::drivers::usb::disk_count() }
+    pub fn sector_size() -> usize { crate::drivers::usb::disk_sector_size() }
+    pub fn block_count(i: usize) -> Option<u32> { crate::drivers::usb::disk_block_count(i) }
+    pub fn read_block(i: usize, lba: u32, buf: &mut [u8]) -> Result<(), ()> { crate::drivers::usb::disk_read_block(i, lba, buf) }
+    pub fn write_block(i: usize, lba: u32, data: &[u8]) -> Result<(), ()> { crate::drivers::usb::disk_write_block(i, lba, data) }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "board-raspberrypi3"))]
+mod disk_backend {
+    pub const SUPPORTED: bool = true;
+    pub fn count() -> usize { crate::boards::raspberrypi3::usb::disk_count() }
+    pub fn sector_size() -> usize { crate::boards::raspberrypi3::usb::disk_sector_size() }
+    pub fn block_count(i: usize) -> Option<u32> { crate::boards::raspberrypi3::usb::disk_block_count(i) }
+    pub fn read_block(i: usize, lba: u32, buf: &mut [u8]) -> Result<(), ()> { crate::boards::raspberrypi3::usb::disk_read_block(i, lba, buf) }
+    pub fn write_block(i: usize, lba: u32, data: &[u8]) -> Result<(), ()> { crate::boards::raspberrypi3::usb::disk_write_block(i, lba, data) }
+}
+
+#[cfg(not(any(target_arch = "x86_64", all(target_arch = "aarch64", feature = "board-raspberrypi3"))))]
+mod disk_backend {
+    pub const SUPPORTED: bool = false;
+    pub fn count() -> usize { 0 }
+    pub fn sector_size() -> usize { 512 }
+    pub fn block_count(_i: usize) -> Option<u32> { None }
+    pub fn read_block(_i: usize, _lba: u32, _buf: &mut [u8]) -> Result<(), ()> { Err(()) }
+    pub fn write_block(_i: usize, _lba: u32, _data: &[u8]) -> Result<(), ()> { Err(()) }
+}
+
+fn cmd_diskinfo() {
+    if !disk_backend::SUPPORTED {
+        print_str("diskinfo: USB mass storage is only supported on x86_64 and Raspberry Pi 3\n");
+        return;
+    }
+    let n = disk_backend::count();
+    if n == 0 {
+        print_str("diskinfo: no USB mass storage device attached\n");
+        return;
+    }
+    for i in 0..n {
+        let Some(blocks) = disk_backend::block_count(i) else { continue };
+        print_str("disk "); print_u64(i as u64);
+        print_str(": "); print_u64(blocks as u64);
+        print_str(" blocks x "); print_u64(disk_backend::sector_size() as u64);
+        print_str(" bytes\n");
+    }
+}
+
+fn cmd_diskread(arg: Option<&str>) {
+    if !disk_backend::SUPPORTED {
+        print_str("diskread: USB mass storage is only supported on x86_64 and Raspberry Pi 3\n");
+        return;
+    }
+    let lba = match arg.and_then(parse_decimal) {
+        Some(n) => n as u32,
+        None => { print_str("usage: diskread <lba>\n"); return; }
+    };
+    if disk_backend::count() == 0 {
+        print_str("diskread: no USB mass storage device attached\n");
+        return;
+    }
+    let mut buf = [0u8; 512];
+    match disk_backend::read_block(0, lba, &mut buf) {
+        Ok(()) => print_hex_dump(&buf[..64]),
+        Err(()) => print_str("diskread: read failed\n"),
+    }
+}
+
+fn cmd_diskwrite(lba_arg: Option<&str>, line: &str) {
+    if !disk_backend::SUPPORTED {
+        print_str("diskwrite: USB mass storage is only supported on x86_64 and Raspberry Pi 3\n");
+        return;
+    }
+    let lba = match lba_arg.and_then(parse_decimal) {
+        Some(n) => n as u32,
+        None => { print_str("usage: diskwrite <lba> <text>\n"); return; }
+    };
+    if disk_backend::count() == 0 {
+        print_str("diskwrite: no USB mass storage device attached\n");
+        return;
+    }
+    let text = skip_words(line, 2);
+    let mut buf = [0u8; 512];
+    let tbytes = text.as_bytes();
+    let len = tbytes.len().min(buf.len());
+    buf[..len].copy_from_slice(&tbytes[..len]);
+    match disk_backend::write_block(0, lba, &buf) {
+        Ok(()) => { print_str("wrote "); print_u64(len as u64); print_str(" bytes to block "); print_u64(lba as u64); print_str("\n"); }
+        Err(()) => print_str("diskwrite: write failed\n"),
+    }
+}
+
 fn cmd_halt() {
     print_str("System halting...\n");
     crate::arch::halt();
@@ -872,6 +980,21 @@ fn print_u64(n: u64) {
     let mut v = n;
     while v > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
     if let Ok(s) = core::str::from_utf8(&buf[i..]) { print_str(s); }
+}
+
+fn print_hex_dump(data: &[u8]) {
+    for (i, b) in data.iter().enumerate() {
+        if i > 0 && i % 16 == 0 { print_str("\n"); }
+        print_hex_byte(*b);
+        print_str(" ");
+    }
+    print_str("\n");
+}
+
+fn print_hex_byte(b: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let s = [HEX[(b >> 4) as usize], HEX[(b & 0xF) as usize]];
+    if let Ok(s) = core::str::from_utf8(&s) { print_str(s); }
 }
 
 fn print_u64_padded(n: u64, width: usize) {

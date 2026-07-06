@@ -25,10 +25,19 @@
 //! can't meet reliably across core frequencies.
 //!
 //! Scope actually implemented: control transfers (needed for the whole
-//! enumeration handshake) and single-shot interrupt-IN polls (needed for
-//! HID reports), both with split-transaction support for Low/Full-speed
-//! devices behind the LAN9514's High-speed hub (`Endpoint::needs_split`).
-//! No isochronous, no bulk, no OUT interrupt.
+//! enumeration handshake), single-shot interrupt-IN polls (needed for HID
+//! reports), and bulk transfers (needed for USB Mass Storage's Bulk-Only
+//! Transport, `msc.rs`) - all three with split-transaction support for
+//! Low/Full-speed devices behind the LAN9514's High-speed hub
+//! (`Endpoint::needs_split`). No isochronous, no OUT interrupt.
+//!
+//! Unlike the x86_64/UHCI sibling driver - which has to submit one Transfer
+//! Descriptor per max-packet-sized chunk and chase the schedule itself for
+//! a multi-packet transfer - this core's internal DMA engine walks a
+//! multi-packet buffer on its own from a single `HCTSIZ`/`HCDMA` setup, so
+//! `bulk_transfer` below (like `control_transfer`'s DATA stage already did)
+//! is one `configure_channel`/`run_channel` call regardless of how many
+//! packets the transfer actually spans.
 
 use super::protocol::{Endpoint, SetupPacket, Speed};
 
@@ -113,6 +122,7 @@ const PID_DATA1: u32 = 0b10;
 const PID_SETUP: u32 = 0b11;
 
 const EPTYPE_CONTROL:   u32 = 0;
+const EPTYPE_BULK:      u32 = 2;
 const EPTYPE_INTERRUPT: u32 = 3;
 
 fn reg(addr: usize) -> *mut u32 {
@@ -725,4 +735,64 @@ pub fn interrupt_in_poll(ep: &Endpoint, toggle: &mut bool, buf: &mut [u8]) -> Re
     } else {
         Ok(0)
     }
+}
+
+/// Cap for a single bulk transfer's DMA buffer - kept separate from
+/// `MAX_XFER` (control transfers/descriptors, 256 B) for the same reason
+/// the UHCI sibling driver keeps its own `MAX_BULK_XFER`: `msc.rs` moves
+/// whole storage sectors (512 B) at once, and `control_transfer`'s existing
+/// `DmaBuf` locals shouldn't grow along with a limit they don't need.
+/// 4096 B covers one 4K page or eight 512 B sectors in a single transfer.
+const MAX_BULK_XFER: usize = 4096;
+
+#[repr(align(4))]
+struct BulkDmaBuf([u8; MAX_BULK_XFER]);
+
+/// Bulk data transfer: SETUP/STATUS-free, moves `buf` in a single DMA burst
+/// (see this module's doc comment on why one `configure_channel`/
+/// `run_channel` call is enough here, unlike the UHCI sibling).
+///
+/// Bulk endpoints own their data-toggle state for their whole lifetime,
+/// reset to DATA0 only by `SET_CONFIGURATION` (USB 2.0 §9.4.5) - same
+/// caller-threaded `toggle` contract as `interrupt_in_poll`. Unlike a
+/// single-packet interrupt poll, though, one call here can span several
+/// packets, and the core auto-alternates the wire PID between them per the
+/// standard USB toggle rule - so the endpoint's toggle only needs flipping
+/// here if an *odd* number of packets went out, an even count cancels back
+/// out to where it started. `StillActive`-style "nothing new yet" isn't a
+/// thing for bulk (unlike interrupt polling): a NAK/error mid-command means
+/// the transfer genuinely failed, not that a device chose not to answer yet.
+pub fn bulk_transfer(ep: &Endpoint, toggle: &mut bool, buf: &mut [u8], data_in: bool) -> Result<usize> {
+    const CHAN: usize = 2;
+    if buf.len() > MAX_BULK_XFER {
+        return Err(());
+    }
+    if buf.is_empty() {
+        return Ok(0);
+    }
+
+    let mps = (ep.max_packet as usize).max(1);
+    let pktcnt = buf.len().div_ceil(mps);
+
+    let mut dma = BulkDmaBuf([0; MAX_BULK_XFER]);
+    let dma_addr = dma.0.as_ptr() as usize;
+    let pid = if *toggle { PID_DATA1 } else { PID_DATA0 };
+
+    if data_in {
+        clean_range(dma_addr, buf.len());
+        configure_channel(CHAN, ep, EPTYPE_BULK, true, pid, buf.len() as u32, dma_addr);
+        run_channel(CHAN, 20, "BULKIN")?;
+        invalidate_range(dma_addr, buf.len());
+        buf.copy_from_slice(&dma.0[..buf.len()]);
+    } else {
+        dma.0[..buf.len()].copy_from_slice(buf);
+        clean_range(dma_addr, buf.len());
+        configure_channel(CHAN, ep, EPTYPE_BULK, false, pid, buf.len() as u32, dma_addr);
+        run_channel(CHAN, 20, "BULKOUT")?;
+    }
+
+    if pktcnt % 2 == 1 {
+        *toggle = !*toggle;
+    }
+    Ok(buf.len())
 }

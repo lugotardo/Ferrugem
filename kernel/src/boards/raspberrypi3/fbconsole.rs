@@ -1,8 +1,8 @@
 //! Framebuffer text console, draws `font5x7` glyphs into the
-//! VideoCore-allocated framebuffer (`framebuffer.rs`) as a visual mirror of
+//! VideoCore-allocated framebuffer (`hdmi.rs`) as a visual mirror of
 //! the UART console. Never authoritative: every function here is a no-op
 //! until `init` succeeds, and stays a no-op forever if it doesn't (no
-//! display attached, mailbox unavailable, ...), see `framebuffer.rs`.
+//! display attached, mailbox unavailable, ...), see `hdmi.rs`.
 //!
 //! `arch::aarch64::console::print_byte` is the single choke point for every
 //! byte of aarch64 console output (shell, panics, exception dumps); it taps

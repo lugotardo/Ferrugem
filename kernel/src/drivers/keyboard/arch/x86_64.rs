@@ -46,12 +46,26 @@ pub fn has_input() -> bool {
 }
 
 pub fn read_byte() -> Option<u8> {
+    check_scroll();
     unsafe {
         if let Some(b) = STATE.pop_byte() {
             return Some(b);
         }
     }
     crate::drivers::usb::take_key()
+}
+
+/// Applies any pending Shift+PageUp(-1)/PageDown(+1) scrollback request
+/// (see `KeyboardState::take_scroll`), PS/2 first since `handle_irq` already
+/// decoded it synchronously, USB HID second (lazily polled, same as
+/// `crate::drivers::usb::take_key`). Piggybacking on `read_byte` - the only
+/// per-iteration check in the shell's stdin read loop (`syscall::sys_read`)
+/// - means this needs no separate timer or IRQ hook to stay responsive.
+fn check_scroll() {
+    let dir = unsafe { STATE.take_scroll() }.or_else(crate::drivers::usb::take_scroll);
+    if let Some(dir) = dir {
+        crate::boards::current::console::scroll_view(dir);
+    }
 }
 
 pub fn read_byte_blocking() -> u8 {

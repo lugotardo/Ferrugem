@@ -70,6 +70,15 @@ pub const CLASS_HID: u8 = 0x03;
 pub const HID_SUBCLASS_BOOT: u8 = 0x01;
 pub const HID_PROTOCOL_KEYBOARD: u8 = 0x01;
 
+// ── Mass Storage Class (USB MSC 1.0 / Bulk-Only Transport) ────────────────
+pub const CLASS_MSC: u8 = 0x08;
+/// SCSI transparent command set - see the identical constant in
+/// `drivers::usb::protocol` (x86_64) for why the other MSC subclasses
+/// aren't handled.
+pub const MSC_SUBCLASS_SCSI: u8 = 0x06;
+/// Bulk-Only Transport - the interface protocol `msc.rs` implements.
+pub const MSC_PROTOCOL_BULK_ONLY: u8 = 0x50;
+
 // ── HID class-specific requests (HID 1.11 section 7.2) ────────────────────
 pub const HID_REQ_SET_IDLE:     u8 = 0x0A;
 pub const HID_REQ_SET_PROTOCOL: u8 = 0x0B;

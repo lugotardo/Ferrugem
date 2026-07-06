@@ -10,7 +10,7 @@
 pub mod gpio;
 pub mod intc;
 pub mod mailbox;
-pub mod framebuffer;
+pub mod hdmi;
 pub mod fbconsole;
 pub mod usb;
 mod font5x7;

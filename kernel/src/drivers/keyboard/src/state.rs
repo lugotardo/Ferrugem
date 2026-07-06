@@ -22,6 +22,7 @@ pub struct KeyboardState {
     led_dirty: bool,
     ps2_extended: bool,
     ps2_skip: u8,
+    scroll: Option<i8>,
 }
 
 impl KeyboardState {
@@ -33,6 +34,7 @@ impl KeyboardState {
             led_dirty: false,
             ps2_extended: false,
             ps2_skip: 0,
+            scroll: None,
         }
     }
 
@@ -79,6 +81,14 @@ impl KeyboardState {
             KeyCode::CapsLock => { self.mods.caps_lock = !self.mods.caps_lock; self.led_dirty = true; }
             KeyCode::NumLock => { self.mods.num_lock = !self.mods.num_lock; self.led_dirty = true; }
             KeyCode::ScrollLock => { self.mods.scroll_lock = !self.mods.scroll_lock; self.led_dirty = true; }
+            // Shift+PageUp/PageDown is the conventional Linux-console/xterm
+            // scrollback hotkey; steal it here (board-agnostic, transport-
+            // agnostic) instead of emitting the usual escape sequence, so
+            // whichever board console is listening (see `take_scroll`) can
+            // scroll its own history without the shell ever seeing these
+            // two key combos. Unshifted PageUp/PageDown are unaffected.
+            KeyCode::PageUp if self.mods.shift => self.scroll = Some(-1),
+            KeyCode::PageDown if self.mods.shift => self.scroll = Some(1),
             _ if !key.is_modifier() => self.emit(key),
             _ => {}
         }
@@ -112,6 +122,13 @@ impl KeyboardState {
 
     pub fn has_output(&self) -> bool {
         !self.out.is_empty()
+    }
+
+    /// Consumes a pending Shift+PageUp(-1)/PageDown(+1) scrollback request,
+    /// if `key_event` recorded one since the last call. `None` the rest of
+    /// the time, i.e. on every normal keystroke.
+    pub fn take_scroll(&mut self) -> Option<i8> {
+        self.scroll.take()
     }
 
     /// `true` at most once per lock-key toggle: callers (the PS/2 and HID

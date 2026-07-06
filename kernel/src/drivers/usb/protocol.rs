@@ -28,6 +28,7 @@ impl Endpoint {
 }
 
 // ── Standard request codes (USB 2.0 table 9-4) ────────────────────────────
+pub const REQ_GET_STATUS:        u8 = 0;
 pub const REQ_SET_ADDRESS:       u8 = 5;
 pub const REQ_GET_DESCRIPTOR:    u8 = 6;
 pub const REQ_SET_CONFIGURATION: u8 = 9;
@@ -39,14 +40,37 @@ pub const TYPE_STANDARD: u8 = 0x00;
 pub const TYPE_CLASS:    u8 = 0x20;
 pub const RECIP_DEVICE:    u8 = 0x00;
 pub const RECIP_INTERFACE: u8 = 0x01;
+/// A hub port request's recipient (USB 2.0 §11.24.1): "other" means the
+/// numbered downstream port, not the hub device itself.
+pub const RECIP_OTHER:     u8 = 0x03;
 
 // ── Descriptor types (USB 2.0 table 9-5) ──────────────────────────────────
 pub const DESC_DEVICE:        u8 = 1;
 pub const DESC_CONFIGURATION: u8 = 2;
+pub const DESC_HUB:           u8 = 0x29;
 
 pub const CLASS_HID: u8 = 0x03;
 pub const HID_SUBCLASS_BOOT: u8 = 0x01;
 pub const HID_PROTOCOL_KEYBOARD: u8 = 0x01;
+
+// ── Hub class (USB 2.0 chapter 11) ─────────────────────────────────────────
+pub const CLASS_HUB: u8 = 0x09;
+pub const HUB_REQ_GET_DESCRIPTOR:     u8 = 6;
+pub const HUB_REQ_SET_PORT_FEATURE:   u8 = 3;
+pub const HUB_REQ_CLEAR_PORT_FEATURE: u8 = 1;
+pub const FEATURE_PORT_RESET:        u16 = 4;
+pub const FEATURE_PORT_POWER:        u16 = 8;
+pub const FEATURE_C_PORT_RESET:      u16 = 20;
+
+// ── Mass Storage Class (USB MSC 1.0 / Bulk-Only Transport) ────────────────
+pub const CLASS_MSC: u8 = 0x08;
+/// SCSI transparent command set - what every USB flash drive and QEMU's
+/// `usb-storage` device report; the handful of other MSC subclasses (RBC,
+/// UFI, ATAPI, ...) aren't handled.
+pub const MSC_SUBCLASS_SCSI: u8 = 0x06;
+/// Bulk-Only Transport - the interface protocol `msc.rs` implements. CBI
+/// (Control/Bulk/Interrupt) devices aren't handled.
+pub const MSC_PROTOCOL_BULK_ONLY: u8 = 0x50;
 
 // ── HID class-specific requests (HID 1.11 section 7.2) ────────────────────
 pub const HID_REQ_SET_REPORT:   u8 = 0x09;

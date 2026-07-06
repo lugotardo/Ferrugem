@@ -3,7 +3,7 @@
 //! The ARM core never talks to the display hardware directly, the VC4 GPU
 //! owns HDMI/composite timing and output entirely. This 32-bit mailbox
 //! (property channel 8) is the only way to ask firmware for a framebuffer;
-//! `framebuffer.rs` is the one caller today.
+//! `hdmi.rs` is the one caller today.
 //!
 //! Real hardware runs with the MMU and D-cache already on by the time this
 //! can run (`arch::board_late_init` fires after `memory::init`'s paging
@@ -95,7 +95,7 @@ pub fn bus_to_phys(bus: u32) -> usize {
 /// response in place. `buffer[0]` must already hold the message size in
 /// bytes and `buffer[1] = 0` (request code); the tags follow per the
 /// Broadcom mailbox property interface. The buffer's address must be
-/// 16-byte aligned (`framebuffer.rs` enforces this via `repr(align(16))`).
+/// 16-byte aligned (`hdmi.rs` enforces this via `repr(align(16))`).
 ///
 /// Returns `false` on a firmware-reported failure or (real hardware should
 /// never hit this, see module docs) a timed-out poll.
